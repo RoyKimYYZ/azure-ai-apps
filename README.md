@@ -2,7 +2,7 @@
 
 A collection of Python demo applications for engineers learning how to build **Retrieval-Augmented Generation (RAG)** pipelines, **AI agent orchestration**, and **chatbot UIs** on Azure AI services.
 
-These are demo and learning projects for myself that I blog about, use as demos for online and in-person tech presentations and show case in my youtube channel https://youtube.com/roykimyyz
+These are demo and learning projects for myself that I [blog](https://www.roykim.ca/) about, use as demos for online and in-person tech presentations and show case in my youtube channel https://youtube.com/roykimyyz
 
 Each sub-project is a standalone, runnable demo that highlights a different architecture pattern or Azure service integration — from simple RAG chat to multi-agent frameworks deployed on Azure Kubernetes.
 
