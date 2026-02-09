@@ -2,7 +2,9 @@
 
 A collection of Python demo applications for engineers learning how to build **Retrieval-Augmented Generation (RAG)** pipelines, **AI agent orchestration**, and **chatbot UIs** on Azure AI services.
 
-Each sub-project is a standalone, runnable demo that highlights a different architecture pattern or Azure service integration — from simple RAG chat to multi-agent frameworks deployed on Kubernetes.
+These are demo and learning projects for myself that I blog about, use as demos for online and in-person tech presentations and show case in my youtube channel https://youtube.com/roykimyyz
+
+Each sub-project is a standalone, runnable demo that highlights a different architecture pattern or Azure service integration — from simple RAG chat to multi-agent frameworks deployed on Azure Kubernetes.
 
 ---
 
@@ -218,20 +220,6 @@ Each sub-project follows a similar workflow:
 > 💡 **Tip:** Each sub-project has its own README with more detailed setup instructions.
 
 ---
-
-## Repository Structure
-
-```
-azure-ai-apps/
-├── README.md                          ← You are here
-├── agent-rag-resume/                  # SK-based RAG chatbot for resumes
-├── agentframework/                    # Multi-agent chatbot with MS Agent Framework on AKS
-├── app-rag-aisearch-sk/               # SK document chat with AI Search plugins
-├── rag-app-resumes/                   # Resume RAG with Azure AI Foundry + Prompty
-├── rag-chatapp-retail/                # Retail product RAG with evaluation pipeline
-├── streamlit-chat/                    # Streamlit chat frontend
-└── python-uv-project-template/       # uv project starter template
-```
 
 ## License
 
