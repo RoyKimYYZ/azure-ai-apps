@@ -43,6 +43,7 @@ name = "agentframework"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "agent-framework" },
     { name = "click" },
     { name = "jinja2" },
     { name = "prompt-toolkit" },
@@ -61,6 +62,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agent-framework", specifier = ">=1.0.0b251120" },
     { name = "click", specifier = ">=8.3.1" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },

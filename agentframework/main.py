@@ -3,13 +3,12 @@ import os
 import sys
 import logging
 from pathlib import Path
-import base64
 import json
 import mimetypes
 import random
 from prompt_toolkit import prompt
 import yaml
-from agent_framework import ChatAgent, AgentRunResponse, UsageContent, UsageDetails
+from agent_framework import ChatAgent, AgentRunResponse, ChatMessage, DataContent, TextContent, UsageContent, UsageDetails
 from agent_framework.azure import AzureOpenAIChatClient
 from azure.identity import AzureCliCredential
 from dotenv import load_dotenv
@@ -502,10 +501,6 @@ async def fitness_agent(image_path: str | None = None) -> None:
     mime_type, _ = mimetypes.guess_type(image_file.name)
     mime_type = mime_type or "application/octet-stream"
     image_bytes = image_file.read_bytes()
-    data_url = (
-        f"data:{mime_type};base64,"
-        f"{base64.b64encode(image_bytes).decode('utf-8')}"
-    )
 
     instructions = (
         "You are a fitness nutrition assistant. Use the provided food image to estimate "
@@ -519,20 +514,28 @@ async def fitness_agent(image_path: str | None = None) -> None:
         name="fitness_agent",
         model=Settings().azure_openai_chat_deployment,
         tools=[],
-        max_tokens=800,
+        max_completion_tokens=800,
         temperature=1.0,
     )
 
+    # Build a multipart ChatMessage with text + image content parts.
+    # This sends the image as a proper vision content block (image_url)
+    # instead of embedding the base64 string in the text prompt.
     prompt_text = (
         "Estimate macronutrients for the food in this image. "
         "Return estimates in grams for protein, carbs, fat, and calories. "
-        "Include a confidence level (low/medium/high) and short notes. "
-        "Image data URL:\n"
-        f"{data_url}"
+        "Include a confidence level (low/medium/high) and short notes."
+    )
+    message = ChatMessage(
+        role="user",
+        contents=[
+            TextContent(text=prompt_text),
+            DataContent(data=image_bytes, media_type=mime_type),
+        ],
     )
 
     try:
-        result = await run_with_retry(agent, prompt_text, response_format=MacroNutrients)
+        result = await run_with_retry(agent, message, response_format=MacroNutrients)
         print("Macronutrient estimates:\n", result)
         if result.usage_details:
             print(f"Image request tokens: {format_usage(result.usage_details)}")
