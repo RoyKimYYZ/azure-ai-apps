@@ -1,0 +1,412 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1060" width="1400" height="1060" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="108%">
+      <feDropShadow dx="2" dy="2" stdDeviation="3" flood-opacity="0.15"/>
+    </filter>
+    <filter id="glow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#D4145A" flood-opacity="0.3"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#4A4A4A"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#0078D4"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#107C10"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#D4145A"/>
+    </marker>
+    <marker id="arrow-purple" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#5C2D91"/>
+    </marker>
+    <pattern id="sdk-stripe" x="0" y="0" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="6" stroke="#D4145A" stroke-width="1" stroke-opacity="0.07"/>
+    </pattern>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1400" height="1060" fill="#F5F5F5" rx="8"/>
+
+  <!-- Title block -->
+  <rect x="30" y="12" width="1340" height="56" rx="8" fill="#1A1A1A"/>
+  <text x="700" y="38" text-anchor="middle" font-size="22" font-weight="bold" fill="#FFFFFF">Agent Framework Chatbot — Application Architecture</text>
+  <text x="700" y="56" text-anchor="middle" font-size="12" fill="#AAAAAA">Azure Kubernetes Service  •  Microsoft Agent Framework SDK v1.0.0b  •  Streamlit  •  KAITO RAGEngine</text>
+
+  <!-- SDK highlight banner -->
+  <rect x="30" y="78" width="1340" height="32" rx="6" fill="#FDE8EE" stroke="#D4145A" stroke-width="1.5"/>
+  <text x="50" y="99" font-size="13" font-weight="bold" fill="#D4145A">🔴  Microsoft Agent Framework SDK</text>
+  <text x="310" y="99" font-size="11" fill="#8B0A30">All red-bordered components use the SDK.  The SDK provides the ChatAgent loop, BaseChatClient contract, ChatMessage/ChatOptions types, retry helpers, and streaming.</text>
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!--  USER / BROWSER                                     -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <rect x="40" y="130" width="140" height="100" rx="12" fill="#FFFFFF" stroke="#0078D4" stroke-width="2" filter="url(#shadow)"/>
+  <text x="110" y="165" text-anchor="middle" font-size="30">👤</text>
+  <text x="110" y="190" text-anchor="middle" font-size="13" font-weight="bold" fill="#0078D4">User</text>
+  <text x="110" y="206" text-anchor="middle" font-size="10" fill="#666">Browser :8501</text>
+
+  <line x1="180" y1="180" x2="248" y2="180" stroke="#0078D4" stroke-width="2" marker-end="url(#arrow-blue)"/>
+  <text x="214" y="173" text-anchor="middle" font-size="9" fill="#0078D4">HTTPS</text>
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!--  STREAMLIT CHATBOT UI                               -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <rect x="250" y="120" width="310" height="210" rx="10" fill="#E8F4FD" stroke="#0078D4" stroke-width="2" filter="url(#shadow)"/>
+  <text x="405" y="142" text-anchor="middle" font-size="14" font-weight="bold" fill="#0078D4">Streamlit Chatbot UI</text>
+  <text x="405" y="157" text-anchor="middle" font-size="10" fill="#555">chatbot/chatbot.py</text>
+
+  <!-- Sidebar -->
+  <rect x="262" y="165" width="130" height="155" rx="6" fill="#FFFFFF" stroke="#99C9E8" stroke-width="1"/>
+  <text x="327" y="182" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">Sidebar Panel</text>
+  <text x="327" y="198" text-anchor="middle" font-size="9" fill="#555">Agent Selector</text>
+  <text x="327" y="211" text-anchor="middle" font-size="9" fill="#555">Provider (read-only)</text>
+  <text x="327" y="224" text-anchor="middle" font-size="9" fill="#555">Endpoint / API Key</text>
+  <text x="327" y="237" text-anchor="middle" font-size="9" fill="#555">Model Dropdown</text>
+  <text x="327" y="250" text-anchor="middle" font-size="9" fill="#555">Temp / Tokens / Top P</text>
+  <text x="327" y="263" text-anchor="middle" font-size="9" fill="#555">Debug Mode ☑</text>
+  <text x="327" y="283" text-anchor="middle" font-size="8" fill="#888">Driven by config.yaml</text>
+  <text x="327" y="295" text-anchor="middle" font-size="8" fill="#888">+ .env fallback</text>
+  <text x="327" y="312" text-anchor="middle" font-size="8" fill="#888">Metrics panel</text>
+
+  <!-- Chat area -->
+  <rect x="402" y="165" width="148" height="155" rx="6" fill="#FFFFFF" stroke="#99C9E8" stroke-width="1"/>
+  <text x="476" y="182" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">Chat Area</text>
+  <text x="476" y="200" text-anchor="middle" font-size="9" fill="#555">Message History</text>
+  <text x="476" y="213" text-anchor="middle" font-size="9" fill="#555">Response + Debug Tabs</text>
+  <text x="476" y="226" text-anchor="middle" font-size="9" fill="#555">Completion Metrics</text>
+
+  <!-- SDK callout in chatbot.py -->
+  <rect x="408" y="242" width="136" height="40" rx="5" fill="#FDE8EE" stroke="#D4145A" stroke-width="1.5"/>
+  <text x="476" y="257" text-anchor="middle" font-size="8" font-weight="bold" fill="#D4145A">SDK Imports</text>
+  <text x="476" y="270" text-anchor="middle" font-size="8" fill="#8B0A30">ChatAgent, ChatMessage</text>
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!--  CONFIG.YAML                                        -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <rect x="262" y="345" width="140" height="52" rx="8" fill="#FFF3E0" stroke="#F57C00" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="332" y="367" text-anchor="middle" font-size="12" font-weight="bold" fill="#E65100">⚙ config.yaml</text>
+  <text x="332" y="382" text-anchor="middle" font-size="9" fill="#666">Providers · Agents · UI</text>
+  <text x="332" y="393" text-anchor="middle" font-size="8" fill="#888">3 providers, 5 agents</text>
+  <line x1="332" y1="345" x2="332" y2="325" stroke="#F57C00" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow)"/>
+
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <!--  MICROSOFT AGENT FRAMEWORK SDK — CORE BOX                   -->
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <rect x="575" y="120" width="380" height="280" rx="12" fill="url(#sdk-stripe)" stroke="#D4145A" stroke-width="3" filter="url(#glow)"/>
+  <rect x="575" y="120" width="380" height="280" rx="12" fill="#FEF5F7" fill-opacity="0.92" stroke="#D4145A" stroke-width="3"/>
+
+  <!-- SDK title bar -->
+  <rect x="575" y="120" width="380" height="34" rx="12" fill="#D4145A"/>
+  <rect x="575" y="140" width="380" height="14" fill="#D4145A"/>
+  <text x="765" y="143" text-anchor="middle" font-size="14" font-weight="bold" fill="#FFFFFF">Microsoft Agent Framework SDK  v1.0.0b</text>
+
+  <!-- ChatAgent box -->
+  <rect x="592" y="165" width="168" height="70" rx="6" fill="#FFFFFF" stroke="#D4145A" stroke-width="1.5"/>
+  <text x="676" y="183" text-anchor="middle" font-size="11" font-weight="bold" fill="#D4145A">ChatAgent</text>
+  <text x="676" y="198" text-anchor="middle" font-size="9" fill="#555">Orchestration loop</text>
+  <text x="676" y="210" text-anchor="middle" font-size="9" fill="#555">instructions · model · tools</text>
+  <text x="676" y="222" text-anchor="middle" font-size="9" fill="#555">agent.run() · run_stream()</text>
+
+  <!-- BaseChatClient box -->
+  <rect x="772" y="165" width="172" height="70" rx="6" fill="#FFFFFF" stroke="#D4145A" stroke-width="1.5"/>
+  <text x="858" y="183" text-anchor="middle" font-size="11" font-weight="bold" fill="#D4145A">BaseChatClient</text>
+  <text x="858" y="198" text-anchor="middle" font-size="9" fill="#555">Abstract contract</text>
+  <text x="858" y="210" text-anchor="middle" font-size="9" fill="#555">_inner_get_response()</text>
+  <text x="858" y="222" text-anchor="middle" font-size="9" fill="#555">_inner_get_streaming_response()</text>
+
+  <!-- Types row 1 -->
+  <rect x="592" y="245" width="80" height="28" rx="4" fill="#FDE8EE" stroke="#E8899A" stroke-width="1"/>
+  <text x="632" y="264" text-anchor="middle" font-size="9" font-weight="bold" fill="#8B0A30">ChatMessage</text>
+
+  <rect x="678" y="245" width="80" height="28" rx="4" fill="#FDE8EE" stroke="#E8899A" stroke-width="1"/>
+  <text x="718" y="264" text-anchor="middle" font-size="9" font-weight="bold" fill="#8B0A30">ChatOptions</text>
+
+  <rect x="764" y="245" width="82" height="28" rx="4" fill="#FDE8EE" stroke="#E8899A" stroke-width="1"/>
+  <text x="805" y="264" text-anchor="middle" font-size="9" font-weight="bold" fill="#8B0A30">ChatResponse</text>
+
+  <rect x="852" y="245" width="92" height="28" rx="4" fill="#FDE8EE" stroke="#E8899A" stroke-width="1"/>
+  <text x="898" y="264" text-anchor="middle" font-size="9" font-weight="bold" fill="#8B0A30">UsageDetails</text>
+
+  <!-- Types row 2 -->
+  <rect x="592" y="279" width="82" height="28" rx="4" fill="#FDE8EE" stroke="#E8899A" stroke-width="1"/>
+  <text x="633" y="298" text-anchor="middle" font-size="9" font-weight="bold" fill="#8B0A30">FinishReason</text>
+
+  <rect x="680" y="279" width="80" height="28" rx="4" fill="#FDE8EE" stroke="#E8899A" stroke-width="1"/>
+  <text x="720" y="298" text-anchor="middle" font-size="9" font-weight="bold" fill="#8B0A30">TextContent</text>
+
+  <rect x="766" y="279" width="115" height="28" rx="4" fill="#FDE8EE" stroke="#E8899A" stroke-width="1"/>
+  <text x="823" y="298" text-anchor="middle" font-size="9" font-weight="bold" fill="#8B0A30">ChatResponseUpdate</text>
+
+  <!-- Streaming / extra -->
+  <rect x="592" y="314" width="165" height="22" rx="4" fill="#FFFFFF" stroke="#D4145A" stroke-width="1" stroke-dasharray="3,2"/>
+  <text x="674" y="329" text-anchor="middle" font-size="8" fill="#8B0A30">AgentRunResponse · UsageContent</text>
+
+  <rect x="764" y="314" width="180" height="22" rx="4" fill="#FFFFFF" stroke="#D4145A" stroke-width="1" stroke-dasharray="3,2"/>
+  <text x="854" y="329" text-anchor="middle" font-size="8" fill="#8B0A30">Streaming via async generators</text>
+
+  <text x="765" y="360" text-anchor="middle" font-size="9" fill="#D4145A">pip install agent-framework  •  © Microsoft</text>
+
+  <!-- Arrow: chatbot → SDK -->
+  <line x1="560" y1="200" x2="590" y2="200" stroke="#D4145A" stroke-width="2" marker-end="url(#arrow-red)"/>
+
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <!--  AGENT FACTORY FUNCTIONS (main.py)                          -->
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <rect x="575" y="410" width="380" height="130" rx="10" fill="#F3E5F5" stroke="#5C2D91" stroke-width="2" filter="url(#shadow)"/>
+  <text x="765" y="432" text-anchor="middle" font-size="14" font-weight="bold" fill="#5C2D91">Agent Factory Functions</text>
+  <text x="765" y="447" text-anchor="middle" font-size="10" fill="#555">main.py — builds ChatAgent instances via SDK</text>
+
+  <rect x="588" y="458" width="112" height="30" rx="5" fill="#FFFFFF" stroke="#5C2D91" stroke-width="1"/>
+  <text x="644" y="477" text-anchor="middle" font-size="9" font-weight="bold" fill="#5C2D91">General Chat Asst.</text>
+
+  <rect x="707" y="458" width="112" height="30" rx="5" fill="#FFFFFF" stroke="#5C2D91" stroke-width="1"/>
+  <text x="763" y="477" text-anchor="middle" font-size="9" font-weight="bold" fill="#5C2D91">Kaito Assistant</text>
+
+  <rect x="826" y="458" width="120" height="30" rx="5" fill="#FFFFFF" stroke="#107C10" stroke-width="1.5"/>
+  <text x="886" y="477" text-anchor="middle" font-size="9" font-weight="bold" fill="#107C10">KAITO RAG Asst.</text>
+
+  <rect x="588" y="494" width="112" height="30" rx="5" fill="#FFFFFF" stroke="#5C2D91" stroke-width="1"/>
+  <text x="644" y="513" text-anchor="middle" font-size="9" font-weight="bold" fill="#5C2D91">Fitness Nutrition</text>
+
+  <rect x="707" y="494" width="112" height="30" rx="5" fill="#FFFFFF" stroke="#5C2D91" stroke-width="1"/>
+  <text x="763" y="513" text-anchor="middle" font-size="9" font-weight="bold" fill="#5C2D91">Agent1 Demo</text>
+
+  <!-- SDK utility callout -->
+  <rect x="826" y="494" width="120" height="30" rx="5" fill="#FDE8EE" stroke="#D4145A" stroke-width="1"/>
+  <text x="886" y="508" text-anchor="middle" font-size="8" fill="#8B0A30">run_with_retry()</text>
+  <text x="886" y="519" text-anchor="middle" font-size="8" fill="#8B0A30">run_with_stream()</text>
+
+  <!-- Arrow: SDK → Factories -->
+  <line x1="765" y1="400" x2="765" y2="408" stroke="#D4145A" stroke-width="2" marker-end="url(#arrow-red)"/>
+  <text x="785" y="407" font-size="8" fill="#D4145A">returns ChatAgent</text>
+
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <!--  CHAT CLIENT IMPLEMENTATIONS                                -->
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <rect x="575" y="555" width="380" height="105" rx="10" fill="#E8F5E9" stroke="#107C10" stroke-width="2" filter="url(#shadow)"/>
+  <text x="765" y="577" text-anchor="middle" font-size="14" font-weight="bold" fill="#107C10">Chat Client Implementations</text>
+  <text x="765" y="592" text-anchor="middle" font-size="10" fill="#555">ai_chat_client.py — extend SDK BaseChatClient</text>
+
+  <!-- AzureOpenAIChatClient -->
+  <rect x="592" y="602" width="170" height="45" rx="5" fill="#FFFFFF" stroke="#0078D4" stroke-width="1.5"/>
+  <rect x="592" y="602" width="170" height="16" rx="5" fill="#D4145A"/>
+  <rect x="592" y="612" width="170" height="6" fill="#D4145A"/>
+  <text x="677" y="614" text-anchor="middle" font-size="8" font-weight="bold" fill="#FFFFFF">SDK BUILT-IN</text>
+  <text x="677" y="630" text-anchor="middle" font-size="10" font-weight="bold" fill="#0078D4">AzureOpenAIChatClient</text>
+  <text x="677" y="642" text-anchor="middle" font-size="8" fill="#666">agent_framework.azure</text>
+
+  <!-- KaitoChatClient -->
+  <rect x="772" y="602" width="170" height="45" rx="5" fill="#FFFFFF" stroke="#107C10" stroke-width="1.5"/>
+  <rect x="772" y="602" width="170" height="16" rx="5" fill="#D4145A"/>
+  <rect x="772" y="612" width="170" height="6" fill="#D4145A"/>
+  <text x="857" y="614" text-anchor="middle" font-size="8" font-weight="bold" fill="#FFFFFF">CUSTOM (extends SDK)</text>
+  <text x="857" y="630" text-anchor="middle" font-size="10" font-weight="bold" fill="#107C10">KaitoChatClient</text>
+  <text x="857" y="642" text-anchor="middle" font-size="8" fill="#666">+ extra_payload for RAG</text>
+
+  <!-- Arrow: Factories → Clients -->
+  <line x1="765" y1="540" x2="765" y2="553" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <text x="765" y="652" text-anchor="middle" font-size="9" fill="#D4145A" font-weight="bold">Both implement BaseChatClient contract from Agent Framework SDK</text>
+
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <!--  BACKEND PROVIDERS (right column)                           -->
+  <!-- ════════════════════════════════════════════════════════════ -->
+
+  <!-- Azure AI Foundry -->
+  <rect x="1010" y="130" width="350" height="105" rx="10" fill="#E3F2FD" stroke="#0078D4" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1185" y="155" text-anchor="middle" font-size="15" font-weight="bold" fill="#0078D4">☁ Azure AI Foundry</text>
+  <text x="1185" y="172" text-anchor="middle" font-size="10" fill="#555">Azure OpenAI Endpoint</text>
+  <rect x="1035" y="183" width="100" height="22" rx="4" fill="#BBDEFB" stroke="#64B5F6" stroke-width="1"/>
+  <text x="1085" y="198" text-anchor="middle" font-size="9" fill="#1565C0">gpt-5.2-chat</text>
+  <rect x="1145" y="183" width="105" height="22" rx="4" fill="#BBDEFB" stroke="#64B5F6" stroke-width="1"/>
+  <text x="1197" y="198" text-anchor="middle" font-size="9" fill="#1565C0">DeepSeek-V3.2</text>
+  <text x="1185" y="226" text-anchor="middle" font-size="9" fill="#888">Auth: API Key + AzureCliCredential</text>
+
+  <!-- Arrow: AzureOpenAI → Foundry -->
+  <path d="M 762 622 L 762 668 Q 762 680, 990 680 Q 1010 680, 1010 400 Q 1010 190, 1008 190" fill="none" stroke="#0078D4" stroke-width="1.5" marker-end="url(#arrow-blue)" stroke-dasharray="6,3"/>
+  <text x="998" y="440" text-anchor="end" font-size="9" fill="#0078D4" transform="rotate(-90,998,440)">HTTPS / REST</text>
+
+  <!-- KAITO Inference Workspace -->
+  <rect x="1010" y="260" width="350" height="100" rx="10" fill="#E8F5E9" stroke="#107C10" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1185" y="285" text-anchor="middle" font-size="15" font-weight="bold" fill="#107C10">KAITO Inference Workspace</text>
+  <text x="1185" y="302" text-anchor="middle" font-size="10" fill="#555">workspace-phi-4-mini.default.svc.cluster.local:80</text>
+  <rect x="1100" y="314" width="170" height="22" rx="4" fill="#C8E6C9" stroke="#81C784" stroke-width="1"/>
+  <text x="1185" y="329" text-anchor="middle" font-size="9" fill="#2E7D32">phi-4-mini-instruct (GPU)</text>
+  <text x="1185" y="352" text-anchor="middle" font-size="9" fill="#888">/v1/chat/completions  •  OpenAI-compatible</text>
+
+  <!-- Arrow: KaitoChatClient → KAITO -->
+  <line x1="942" y1="625" x2="1008" y2="320" stroke="#107C10" stroke-width="1.5" marker-end="url(#arrow-green)"/>
+  <text x="990" y="490" text-anchor="end" font-size="9" fill="#107C10" transform="rotate(-70,990,490)">HTTP</text>
+
+  <!-- KAITO RAGEngine -->
+  <rect x="1010" y="385" width="350" height="185" rx="10" fill="#E8F5E9" stroke="#107C10" stroke-width="2.5" filter="url(#shadow)"/>
+  <text x="1185" y="408" text-anchor="middle" font-size="15" font-weight="bold" fill="#107C10">KAITO RAGEngine</text>
+  <text x="1185" y="425" text-anchor="middle" font-size="10" fill="#555">ragengine-example.default.svc.cluster.local:80</text>
+
+  <!-- RAGEngine internal flow -->
+  <rect x="1025" y="438" width="115" height="42" rx="5" fill="#C8E6C9" stroke="#81C784" stroke-width="1"/>
+  <text x="1082" y="457" text-anchor="middle" font-size="9" font-weight="bold" fill="#2E7D32">① Embed Query</text>
+  <text x="1082" y="472" text-anchor="middle" font-size="8" fill="#555">bge-small-en-v1.5</text>
+
+  <rect x="1150" y="438" width="105" height="42" rx="5" fill="#FFF9C4" stroke="#FBC02D" stroke-width="1"/>
+  <text x="1202" y="457" text-anchor="middle" font-size="9" font-weight="bold" fill="#F57F17">② Vector Search</text>
+  <text x="1202" y="472" text-anchor="middle" font-size="8" fill="#555">index: rag_index</text>
+
+  <rect x="1265" y="438" width="85" height="42" rx="5" fill="#E8EAF6" stroke="#5C6BC0" stroke-width="1"/>
+  <text x="1307" y="457" text-anchor="middle" font-size="9" font-weight="bold" fill="#283593">③ Retrieve</text>
+  <text x="1307" y="472" text-anchor="middle" font-size="8" fill="#555">top-k docs</text>
+
+  <line x1="1140" y1="459" x2="1148" y2="459" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
+  <line x1="1255" y1="459" x2="1263" y2="459" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
+
+  <rect x="1070" y="495" width="220" height="34" rx="5" fill="#C8E6C9" stroke="#81C784" stroke-width="1"/>
+  <text x="1180" y="517" text-anchor="middle" font-size="10" font-weight="bold" fill="#2E7D32">④ phi-4-mini LLM Inference</text>
+  <line x1="1180" y1="480" x2="1180" y2="493" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
+
+  <rect x="1070" y="536" width="220" height="24" rx="4" fill="#FFFFFF" stroke="#107C10" stroke-width="1"/>
+  <text x="1180" y="552" text-anchor="middle" font-size="9" fill="#107C10">⑤ Grounded response + source_nodes</text>
+  <line x1="1180" y1="529" x2="1180" y2="534" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
+
+  <!-- Arrow: KaitoChatClient → RAGEngine -->
+  <line x1="942" y1="635" x2="1008" y2="500" stroke="#107C10" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <text x="962" y="560" text-anchor="middle" font-size="9" fill="#107C10" font-weight="bold">HTTP</text>
+  <text x="962" y="572" text-anchor="middle" font-size="8" fill="#107C10">+index_name</text>
+
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <!--  SDK INTEGRATION DETAIL PANEL                               -->
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <rect x="40" y="410" width="520" height="250" rx="10" fill="#FFFFFF" stroke="#D4145A" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="40" y="410" width="520" height="30" rx="10" fill="#D4145A"/>
+  <rect x="40" y="430" width="520" height="10" fill="#D4145A"/>
+  <text x="300" y="432" text-anchor="middle" font-size="13" font-weight="bold" fill="#FFFFFF">🔴  How the Agent Framework SDK Is Applied</text>
+
+  <text x="60" y="462" font-size="11" font-weight="bold" fill="#1A1A1A">1. Agent Abstraction (ChatAgent)</text>
+  <text x="75" y="477" font-size="9" fill="#555">Each agent factory returns a ChatAgent configured with instructions, model, and tools.</text>
+  <text x="75" y="490" font-size="9" fill="#555">The SDK's run() orchestration loop handles message prep, model call, and response parsing.</text>
+
+  <text x="60" y="510" font-size="11" font-weight="bold" fill="#1A1A1A">2. Chat Client Contract (BaseChatClient)</text>
+  <text x="75" y="525" font-size="9" fill="#555">AzureOpenAIChatClient — SDK built-in, authenticates via AzureCliCredential.</text>
+  <text x="75" y="538" font-size="9" fill="#555">KaitoChatClient — custom implementation extending BaseChatClient for KAITO endpoints.</text>
+  <text x="75" y="551" font-size="9" fill="#555">Override _inner_get_response() and _inner_get_streaming_response() only.</text>
+
+  <text x="60" y="571" font-size="11" font-weight="bold" fill="#1A1A1A">3. Type System (ChatMessage, ChatOptions, ChatResponse)</text>
+  <text x="75" y="586" font-size="9" fill="#555">All messages flow as ChatMessage(role, text). Sidebar parameters map to ChatOptions.</text>
+  <text x="75" y="599" font-size="9" fill="#555">Responses carry ChatResponse with UsageDetails (token counts) + FinishReason.</text>
+
+  <text x="60" y="619" font-size="11" font-weight="bold" fill="#1A1A1A">4. Streaming &amp; Retry (run_with_retry, run_with_stream)</text>
+  <text x="75" y="634" font-size="9" fill="#555">run_with_retry: exponential backoff on RateLimitError (up to 5 attempts).</text>
+  <text x="75" y="647" font-size="9" fill="#555">run_with_stream: async generator yielding ChatResponseUpdate for real-time tokens.</text>
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!--  PROMPT TEMPLATES                                   -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <rect x="40" y="350" width="210" height="50" rx="8" fill="#FFF3E0" stroke="#F57C00" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="145" y="372" text-anchor="middle" font-size="11" font-weight="bold" fill="#E65100">📄 Prompt Templates</text>
+  <text x="145" y="388" text-anchor="middle" font-size="9" fill="#666">prompts/assistant_jinja.yaml  •  Jinja2</text>
+  <line x1="250" y1="375" x2="588" y2="475" stroke="#888" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <!--  AKS INFRASTRUCTURE STRIP                                   -->
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <rect x="40" y="690" width="1320" height="130" rx="10" fill="#FFF" stroke="#0078D4" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="700" y="715" text-anchor="middle" font-size="14" font-weight="bold" fill="#0078D4">Azure Kubernetes Service (AKS) — Namespace: default</text>
+
+  <rect x="60" y="730" width="215" height="70" rx="6" fill="#E3F2FD" stroke="#0078D4" stroke-width="1"/>
+  <text x="167" y="753" text-anchor="middle" font-size="11" font-weight="bold" fill="#0078D4">Azure Container Registry</text>
+  <text x="167" y="768" text-anchor="middle" font-size="9" fill="#555">rkimacr.azurecr.io</text>
+  <text x="167" y="783" text-anchor="middle" font-size="9" fill="#555">agentframework-chatbot:v1</text>
+  <text x="167" y="795" text-anchor="middle" font-size="8" fill="#888">Docker build → push → deploy</text>
+
+  <rect x="290" y="730" width="215" height="70" rx="6" fill="#E8F5E9" stroke="#107C10" stroke-width="1"/>
+  <text x="397" y="753" text-anchor="middle" font-size="11" font-weight="bold" fill="#107C10">Chatbot Deployment Pod</text>
+  <text x="397" y="768" text-anchor="middle" font-size="9" fill="#555">Streamlit + Agent Framework</text>
+  <text x="397" y="783" text-anchor="middle" font-size="9" fill="#555">Port 8501</text>
+  <text x="397" y="795" text-anchor="middle" font-size="8" fill="#D4145A" font-weight="bold">SDK runs here ⬆</text>
+
+  <rect x="520" y="730" width="215" height="70" rx="6" fill="#E8F5E9" stroke="#107C10" stroke-width="1"/>
+  <text x="627" y="753" text-anchor="middle" font-size="11" font-weight="bold" fill="#107C10">KAITO Workspace Pod</text>
+  <text x="627" y="768" text-anchor="middle" font-size="9" fill="#555">phi-4-mini-instruct</text>
+  <text x="627" y="783" text-anchor="middle" font-size="9" fill="#555">GPU node (NVIDIA)</text>
+
+  <rect x="750" y="730" width="215" height="70" rx="6" fill="#E8F5E9" stroke="#107C10" stroke-width="1.5"/>
+  <text x="857" y="753" text-anchor="middle" font-size="11" font-weight="bold" fill="#107C10">RAGEngine Pod</text>
+  <text x="857" y="768" text-anchor="middle" font-size="9" fill="#555">bge-small + vector index</text>
+  <text x="857" y="783" text-anchor="middle" font-size="9" fill="#555">→ phi-4-mini inference</text>
+
+  <rect x="980" y="730" width="360" height="70" rx="6" fill="#FFF3E0" stroke="#F57C00" stroke-width="1"/>
+  <text x="1160" y="750" text-anchor="middle" font-size="10" font-weight="bold" fill="#E65100">ClusterIP Services</text>
+  <text x="1160" y="768" text-anchor="middle" font-size="9" fill="#555">workspace-phi-4-mini.default.svc.cluster.local:80</text>
+  <text x="1160" y="783" text-anchor="middle" font-size="9" fill="#555">ragengine-example.default.svc.cluster.local:80</text>
+  <text x="1160" y="796" text-anchor="middle" font-size="8" fill="#888">In-cluster HTTP — no external ingress required</text>
+
+  <line x1="275" y1="765" x2="288" y2="765" stroke="#0078D4" stroke-width="1" marker-end="url(#arrow-blue)"/>
+  <line x1="505" y1="765" x2="518" y2="765" stroke="#107C10" stroke-width="1" marker-end="url(#arrow-green)"/>
+  <line x1="735" y1="765" x2="748" y2="765" stroke="#107C10" stroke-width="1" marker-end="url(#arrow-green)"/>
+
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <!--  DATA FLOW + LEGEND                                         -->
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <rect x="40" y="840" width="680" height="200" rx="8" fill="#FFFFFF" stroke="#CCC" stroke-width="1"/>
+  <text x="60" y="865" font-size="13" font-weight="bold" fill="#333">Request Flow</text>
+
+  <text x="60" y="888" font-size="10" fill="#333">1.</text>
+  <text x="78" y="888" font-size="10" fill="#333">User selects agent in sidebar — config.yaml resolves provider, model, endpoint defaults</text>
+
+  <text x="60" y="908" font-size="10" fill="#D4145A" font-weight="bold">2.</text>
+  <text x="78" y="908" font-size="10" fill="#333">User prompt → chatbot.py dispatches to matching agent factory function in main.py</text>
+
+  <text x="60" y="928" font-size="10" fill="#D4145A" font-weight="bold">3.</text>
+  <text x="78" y="928" font-size="10" fill="#333">Factory builds SDK ChatAgent with appropriate ChatClient (Azure OpenAI or KAITO)</text>
+
+  <text x="60" y="948" font-size="10" fill="#D4145A" font-weight="bold">4.</text>
+  <text x="78" y="948" font-size="10" fill="#333">SDK agent.run() → ChatClient._inner_get_response() → HTTP POST /v1/chat/completions</text>
+
+  <text x="60" y="968" font-size="10" fill="#333">5.</text>
+  <text x="78" y="968" font-size="10" fill="#333">Backend returns completion → SDK parses into ChatResponse → display in Streamlit</text>
+
+  <text x="60" y="993" font-size="10" fill="#107C10" font-weight="bold">RAG path:</text>
+  <text x="120" y="993" font-size="10" fill="#333">KaitoChatClient sends {messages + index_name} → RAGEngine embeds → vector search →</text>
+  <text x="120" y="1008" font-size="10" fill="#333">context + prompt → phi-4-mini LLM → grounded answer with source_nodes</text>
+
+  <text x="60" y="1030" font-size="10" fill="#D4145A" font-weight="bold">SDK value:</text>
+  <text x="120" y="1030" font-size="10" fill="#333">Steps 2–5 are SDK-managed. Custom code only needs _inner_get_response() to reach any backend.</text>
+
+  <!-- Legend -->
+  <rect x="740" y="840" width="620" height="200" rx="8" fill="#FFFFFF" stroke="#CCC" stroke-width="1"/>
+  <text x="770" y="865" font-size="13" font-weight="bold" fill="#333">Legend</text>
+
+  <rect x="770" y="878" width="20" height="14" rx="3" fill="#FDE8EE" stroke="#D4145A" stroke-width="2"/>
+  <text x="800" y="890" font-size="10" fill="#333">Agent Framework SDK component (red border)</text>
+
+  <line x1="770" y1="908" x2="810" y2="908" stroke="#D4145A" stroke-width="2"/>
+  <text x="820" y="912" font-size="10" fill="#333">SDK dependency / data flow</text>
+
+  <line x1="770" y1="928" x2="810" y2="928" stroke="#0078D4" stroke-width="2"/>
+  <text x="820" y="932" font-size="10" fill="#333">Azure AI Foundry path</text>
+
+  <line x1="770" y1="948" x2="810" y2="948" stroke="#107C10" stroke-width="2"/>
+  <text x="820" y="952" font-size="10" fill="#333">KAITO / RAGEngine path</text>
+
+  <line x1="770" y1="968" x2="810" y2="968" stroke="#888" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="820" y="972" font-size="10" fill="#333">Internal dependency</text>
+
+  <rect x="1050" y="878" width="14" height="14" rx="2" fill="#E3F2FD" stroke="#0078D4" stroke-width="1"/>
+  <text x="1072" y="890" font-size="10" fill="#333">Azure service</text>
+
+  <rect x="1050" y="900" width="14" height="14" rx="2" fill="#E8F5E9" stroke="#107C10" stroke-width="1"/>
+  <text x="1072" y="912" font-size="10" fill="#333">KAITO / K8s component</text>
+
+  <rect x="1050" y="922" width="14" height="14" rx="2" fill="#FFF3E0" stroke="#F57C00" stroke-width="1"/>
+  <text x="1072" y="934" font-size="10" fill="#333">Configuration</text>
+
+  <rect x="1050" y="944" width="14" height="14" rx="2" fill="#F3E5F5" stroke="#5C2D91" stroke-width="1"/>
+  <text x="1072" y="956" font-size="10" fill="#333">Agent factory layer</text>
+
+  <!-- Key insight callout -->
+  <rect x="770" y="982" width="570" height="48" rx="6" fill="#FDE8EE" stroke="#D4145A" stroke-width="1.5"/>
+  <text x="785" y="1001" font-size="10" font-weight="bold" fill="#D4145A">💡 Key SDK Design Pattern</text>
+  <text x="785" y="1018" font-size="9" fill="#555">Swap any LLM backend by implementing BaseChatClient — the ChatAgent orchestration, message types,</text>
+  <text x="785" y="1030" font-size="9" fill="#555">retry logic, streaming, and token tracking all remain unchanged. Zero agent code changes needed.</text>
+</svg>

@@ -1,0 +1,239 @@
+Title:- Business Intelligence Specialist
+
+Location – 315 Front St. West/hybrid(3 days a week)
+
+Duration- 2025-04-15 to 2026-03-31
+
+Client – Ministry of Public and Business Service Delivery
+
+Ref No.- RQ08964
+
+ 
+
+Must haves:
+
+ 
+
+3+ Azure Data Lake and Data Warehouse, and building Databricks notebooks (Must Have)
+
+·      3+ years in ETL tools such as Microsoft SSIS, stored procedures (Must Have)
+
+·      3+ years Python and PySpark (Must Have)
+
+Title
+
+Business Intelligence Specialist - ETL Developer
+
+Description
+
+Please note: this is a full-year half-time posting.
+
+ 
+
+General Responsibilities
+
+·      Design, develop and implement data ingestion pipeline from Oracle source to Azure Data Lake and Databricks - initial load and incremental ETL. Used tools are:
+
+§ Oracle GoldenGate (knowledge and experience are an asset) for data ingestion and Change Data Capture (currently in final stages of proof of concept)
+
+§ Azure Data Factory (good knowledge) to orchestrate pipeline execution
+
+§ Azure Databricks/PySpark (expert Python/PySpark knowledge required) to build transformations of raw (bronze) data into curated zone (silver) and datamart zone (gold)
+
+§ PowerDesigner (asset) to read and maintain data models
+
+·      Review requirements, source data tables and relationships to identify solutions for optimum data models and transformations
+
+·      Review existing on-prem design to produce design and migration steps
+
+·      Design data ingestion mechanisms and transformations to update Delta Lake zones (bronze, silver, and gold), using GoldenGate as CDC
+
+·      Work with IT partner on configuration of GoldenGate - responsible to provide direction and "how to"
+
+·      Prepare design artifacts and process diagrams, understand and update dimensional data models and source-to-target-mapping (STTM) documents
+
+·      Analyze data - physical model mapping from data source to datamart model.
+
+·      Understand data requirements and recommend changes to the data model.
+
+·      Develop scripts to build physical model, and to create schema structure.
+
+·      Access Oracle DB and SqlServer environments, use SSIS and other development tools for analyzing legacy solution to be migrated.
+
+·      Proactively communicate with leads on any changes required to conceptual, logical and physical models, communicate and review dependencies and risks.
+
+·      Develop ETL strategy and solution for different sets of data modules
+
+·      Create physical level design documents and unit test cases.
+
+·      Develop Databricks notebooks and deployment packages for Incremental and Full Load.
+
+·      Develop test plans and perform unit testing of pipelines and scripts.
+
+·      Assess data quality and conduct data profiling
+
+·      Troubleshoot performance issues, ETL Load issues, check log activity for each Individual package and transformation.
+
+·      Participate in Go Live planning and production deployment, and create production deployment steps and packages.
+
+·      Create design and release documentation
+
+·      Provide Go Live support and review after Go Live.
+
+·      Review existing ETL process, tools and provide recommendation on improving performance and reduce ETL timelines.
+
+·      Review Infrastructure and any performance issues for overall process improvement.
+
+·      Knowledge Transfer to Ministry staff, develop documentation on the work completed.
+
+Skills
+
+Experience and Skill Set Requirements
+
+Experience:
+
+·      Experience of 7+ years of working in Data Warehousing and ETL development
+
+·      Experience of 3+ years of working with Databricks , Azure Data Factory, and Python/PySpark
+
+·      Experience of 3+ years of working with SQL Server, SSIS, and T-SQL Development
+
+·      Experience building data ingestion and change data capture using Oracle GoldenGate
+
+·      Experience working with building Databases, Data Warehouse and Data Mart and working with incremental and full loads
+
+·      Experience with any ETL tools such as Azure Data Factory and SqlServer Integration Services
+
+·      Experience working with MS SQL Server and other RDBMS (Oracle, PL/SQL)
+
+·      Experience on dimensional data modeling, and tools – e.g. PowerDesigner,
+
+·      Experience with snowflake and star schema model; experience in designing data warehouse solutions using slowly changing dimensions.
+
+·      Experience with Delta Lake concepts and Medallion architecture (bronze/silver/gold)
+
+·      Understanding data warehouse architecture, dimensional data and fact model.
+
+·      Analyzing, designing, developing, testing and documenting ETL from detailed and high-level specifications, and assist in troubleshooting.
+
+·      Utilize SQL to perform tasks other than data transformation (DDL, complex queries)
+
+·      Good knowledge of database and delta lake performance optimization techniques
+
+·      Experience working in an Agile environment, using DevOps tools for user stories, code repository, test plans and defect tracking
+
+·      Ability to assist in the requirements analysis and design specifications
+
+·      Work closely with Designers, Business Analysts and other Developers
+
+·      Liaise with Project Managers, Quality Assurance Analysts and Business Intelligence Consultants
+
+ 
+
+Skills:
+
+·      3+ Azure Data Lake and Data Warehouse, and building Databricks notebooks (Must Have)
+
+·      3+ years in ETL tools such as Microsoft SSIS, stored procedures (Must Have)
+
+·      3+ years Python and PySpark (Must Have)
+
+·      Azure Data Factory
+
+·      Oracle GoldenGate
+
+·      SQL Server
+
+·      Oracle
+
+·      Ability to present technical solution to business users
+
+ 
+
+Assets:
+
+·      Knowledge and experience building data ingestion, history, change data capture using Oracle GoldenGate is an asset.
+
+ 
+
+Evaluation Criteria
+
+Design Documentation and Analysis Skills (35 points)
+
+·      Demonstrated experience in creating both Functional Design Documents (FDD) & Detailed Design Documents (DDD).
+
+·      Experience in Fit-Gap analysis, system use case reviews, requirements reviews, coding exercises and reviews.
+
+·      Experience in the development and maintaining a plan to address contract deliverables, through the identification of significant milestones and expected results with weekly status reporting.
+
+·      Work with the Client & Developer(s) assigned to refine/confirm Business Requirements
+
+·      Participate in defect fixing, testing support and development activities for ETL tool. Assist with defect fixing and testing support for Power BI reports.
+
+·      Analyze and document solution complexity and interdependencies by function including providing support for data validation.
+
+ 
+
+Development, Database and ETL experience (55 points)
+
+·      Demonstrated experience in Microsoft specific software development and several years of practical experience (minimum 7+ years overall)
+
+·      Proven experience in developing in Azure DevOps
+
+·      Experience in application mapping to populate delta lake and dimensional data mart schemas
+
+·      Demonstrated experience in Extract, Transform & Load and Extract, Load & Transform software development and several years of practical experience (minimum 7+ years)
+
+·      Experience in providing ongoing support on Azure pipeline/configuration and SSIS development
+
+·      Experience building data ingesting and change data capture using GoldenGate
+
+·      Assist in the development of the pre-defined and adhoc reports and meet the coding and accessibility requirements.
+
+·      Demonstrated experience with Oracle and Microsoft interfaces
+
+·      Proficient in SQL and Azure DevOps
+
+·      Implementing logical and physical data models
+
+ 
+
+Knowledge Transfer (10 points)
+
+·      The Developer must have previous work experience in conducting Knowledge Transfer and training sessions, ensuring the resources will receive the required knowledge to support the system. The resource must develop learning activities using review-watch-do methodology & demonstrate the ability to prepare and present.
+
+·      Development of documentation and materials as part of a review and knowledge transfer to other members
+
+·      Development and facilitation of classroom based, or virtual instructor demo led sessions for Developers
+
+·      Monitor identified milestones and submission of status reports to ensure Knowledge Transfer is fully completed
+
+Supplier Comments
+
+Closing Date/Time
+
+2025-03-28, 1:00 p.m.
+
+ 
+
+Max number of candidate submission - 1 (one)
+
+Candidate is required to come in office - 3 days a week
+
+ 
+
+Best Regard’s
+
+ 
+
+Tarun Ashish
+
+Senior IT Recruiter
+
+ 
+
+Email: Ashisht@srastaffing.com
+
+Phone No.: +1437-524-8134
+
+Address - 615-110 Sheppard Avenue East , North York , Toronto, ON M2N6Y8

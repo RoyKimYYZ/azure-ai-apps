@@ -1,0 +1,141 @@
+{
+    "version": "1.0",
+    "pluginName": "GenericPlugin",
+    "functionName": "Prompt",
+    "description": "Turn a scenario into a creative or humorous excuse to send your boss",
+    "filePath": "app-rag-aisearch-sk/plugins/GenericPlugin/GenericPlugin/Prompt/skprompt.txt",
+    "results": [
+        {
+            "completionConfig": {
+                "serviceId": "gpt-4",
+                "aiService": "AzureOpenAI",
+                "deploymentName": "gpt-4",
+                "endpoint": "https://rkopenai.openai.azure.com/",
+                "useCustomEndpoint": false,
+                "endpointType": "chat-completion",
+                "modelId": "gpt-4o",
+                "chatSystemMessage": "You are an AI assistant that helps people find information."
+            },
+            "variables": [],
+            "executionSettings": {},
+            "output": {
+                "prompt": "system:\n# Instructions\n- You are an AI assistant with cloud devops expertise.\n- Given the chat_history, and current user's query, infer the user's question about devops engineering.\n\nuser:\n{$input}",
+                "durationInMilliseconds": 726.457,
+                "inputTokens": null,
+                "outputTokens": null,
+                "result": "Certainly! Please provide the input or query you'd like assistance with, and I'll infer the user's question about DevOps engineering.",
+                "chatCompletionResult": "Certainly! Please provide the input or query you'd like assistance with, and I'll infer the user's question about DevOps engineering."
+            }
+        },
+        {
+            "completionConfig": {
+                "serviceId": "gpt-4",
+                "aiService": "AzureOpenAI",
+                "deploymentName": "gpt-4",
+                "endpoint": "https://rkopenai.openai.azure.com/",
+                "useCustomEndpoint": false,
+                "endpointType": "chat-completion",
+                "modelId": "gpt-4o",
+                "chatSystemMessage": "You are an AI assistant that helps people find information."
+            },
+            "variables": [],
+            "executionSettings": {},
+            "output": {
+                "prompt": "system:\n# Instructions\n- You are an AI assistant with cloud devops expertise.\n- Given the chat_history, and current user's query, infer the user's question about devops engineering.\n\nuser:\n{input}",
+                "durationInMilliseconds": 721.9871,
+                "inputTokens": null,
+                "outputTokens": null,
+                "result": "Sure, I'll infer the user's potential inquiry about DevOps engineering based on their input. What do you have in mind?",
+                "chatCompletionResult": "Sure, I'll infer the user's potential inquiry about DevOps engineering based on their input. What do you have in mind?"
+            }
+        },
+        {
+            "completionConfig": {
+                "serviceId": "gpt-4",
+                "aiService": "AzureOpenAI",
+                "deploymentName": "gpt-4",
+                "endpoint": "https://rkopenai.openai.azure.com/",
+                "useCustomEndpoint": false,
+                "endpointType": "chat-completion",
+                "modelId": "gpt-4o",
+                "chatSystemMessage": "You are an AI assistant that helps people find information."
+            },
+            "variables": [],
+            "executionSettings": {},
+            "output": {
+                "prompt": "system:\n# Instructions\n- You are an AI assistant with cloud devops expertise.\n- Given the chat_history, and current user's query, infer the user's question about devops engineering.\n\nuser:\n{$input}",
+                "durationInMilliseconds": 721.3728,
+                "inputTokens": null,
+                "outputTokens": null,
+                "result": "Understood! Please provide the user's input, and I'll infer their question about DevOps engineering from the context.",
+                "chatCompletionResult": "Understood! Please provide the user's input, and I'll infer their question about DevOps engineering from the context."
+            }
+        },
+        {
+            "completionConfig": {
+                "serviceId": "gpt-4",
+                "aiService": "AzureOpenAI",
+                "deploymentName": "gpt-4",
+                "endpoint": "https://rkopenai.openai.azure.com/",
+                "useCustomEndpoint": false,
+                "endpointType": "chat-completion",
+                "modelId": "gpt-4o",
+                "chatSystemMessage": "You are an AI assistant that helps people find information."
+            },
+            "variables": [],
+            "executionSettings": {},
+            "output": {
+                "prompt": "system:\n# Instructions\n- You are an AI assistant with cloud devops expertise.\n- Given the chat_history, and current user's query, infer the user's question about devops engineering.\n\nuser:\n{$input}",
+                "durationInMilliseconds": 686.4193,
+                "inputTokens": null,
+                "outputTokens": null,
+                "result": "Sure! Please provide the user's query or input, and I'll infer the devops-related question for you.",
+                "chatCompletionResult": "Sure! Please provide the user's query or input, and I'll infer the devops-related question for you."
+            }
+        },
+        {
+            "completionConfig": {
+                "serviceId": "gpt-4",
+                "aiService": "AzureOpenAI",
+                "deploymentName": "gpt-4",
+                "endpoint": "https://rkopenai.openai.azure.com/",
+                "useCustomEndpoint": false,
+                "endpointType": "chat-completion",
+                "modelId": "gpt-4o",
+                "chatSystemMessage": "You are an AI assistant that helps people find information."
+            },
+            "variables": [],
+            "executionSettings": {},
+            "output": {
+                "prompt": "system:\n# Instructions\n- You are an AI assistant with cloud devops expertise.\n- Given the chat_history, and current user's query, infer the user's question about devops engineering.\n\nuser:\n{$input}",
+                "durationInMilliseconds": 826.2994,
+                "inputTokens": null,
+                "outputTokens": null,
+                "result": "Understood. Please provide the current **chat_history** and your **query** (input), and I will infer the specific DevOps-related question or topic you are asking about.",
+                "chatCompletionResult": "Understood. Please provide the current **chat_history** and your **query** (input), and I will infer the specific DevOps-related question or topic you are asking about."
+            }
+        },
+        {
+            "completionConfig": {
+                "serviceId": "gpt-4",
+                "aiService": "AzureOpenAI",
+                "deploymentName": "gpt-4",
+                "endpoint": "https://rkopenai.openai.azure.com/",
+                "useCustomEndpoint": false,
+                "endpointType": "chat-completion",
+                "modelId": "gpt-4o",
+                "chatSystemMessage": "You are an AI assistant that helps people find information."
+            },
+            "variables": [],
+            "executionSettings": {},
+            "output": {
+                "prompt": "system:\n# Instructions\n- You are an AI assistant with cloud devops expertise.\n- Given the chat_history, and current user's query, infer the user's question about devops engineering.\n\nuser:\n{$input}",
+                "durationInMilliseconds": 838.235,
+                "inputTokens": null,
+                "outputTokens": null,
+                "result": "Understood! Please provide me with the chat_history and the current query, and I’ll infer the user's question about DevOps engineering to proceed.",
+                "chatCompletionResult": "Understood! Please provide me with the chat_history and the current query, and I’ll infer the user's question about DevOps engineering to proceed."
+            }
+        }
+    ]
+}

@@ -1,0 +1,13 @@
+[server]
+headless = false
+port = 8501
+enableCORS = false
+address = "localhost"
+
+[logger]
+level = "debug"
+format = "%(asctime)s %(levelname)s %(message)s"
+
+[watch]
+enable = true
+directory = "./"  # Optional: Specify the directory to watch for changes

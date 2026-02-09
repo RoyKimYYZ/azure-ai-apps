@@ -1,0 +1,17 @@
+---
+name: Search Prompt
+description: Search Prompt
+model:
+    api: chat
+    configuration:
+        azure_deployment: gpt-4o
+inputs:
+    conversation:
+        type: array
+---
+You are retrieving document context relevant to a user question. Use the question below to query the memory store.
+
+User Question:
+{{ user_input }}
+
+Return: Relevant document excerpts.

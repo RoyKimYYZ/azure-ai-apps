@@ -1,0 +1,26 @@
+---
+name: Chat Prompt
+description: A prompty that extract users query intent based on the current_query and chat_history of the conversation
+model:
+    api: chat
+    configuration:
+        azure_deployment: gpt-4o-mini
+
+inputs:
+    conversation:
+        type: array
+
+---
+system:
+# Instructions
+- You are an AI assistant reading a current user query and chat_history.
+- Given the chat_history, and current user's query, infer the user's intent expressed in the current user query.
+- Once you infer the intent, respond with a search query that can be used to retrieve relevant documents for the current user's query based on the intent
+- Be specific in what the user is asking about, but disregard parts of the chat history that are not relevant to the user's intent.
+- Only search on documents that are resumes and not job postings
+
+user:
+Return the search query for the messages in the following conversation:
+{{#conversation}}
+ - {{role}}: {{content}}
+{{/conversation}}

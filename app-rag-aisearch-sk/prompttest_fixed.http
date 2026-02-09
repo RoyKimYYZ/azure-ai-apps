@@ -1,0 +1,32 @@
+### OpenAI API Request
+# Ensure you have a `.env` file in the root directory with the following variables:
+# OPENAI_API_KEY=<your_openai_api_key>
+# OPENAI_ENDPOINT=<your_openai_endpoint>
+
+POST https://<your-openai-resource>.openai.azure.com/v1/completions
+Authorization: Bearer <YOUR_AZURE_OPENAI_KEY>
+Content-Type: application/json
+
+{
+    "model": "gpt-4o",
+    "prompt": "Write a short story about a robot learning to paint.",
+    "max_tokens": 100,
+    "temperature": 0.7
+}
+
+### Chat with Docs API Request
+
+POST http://localhost:5000/api/chat
+Content-Type: application/json
+
+{
+    "query": "I am working on a tech project that requires a cloud engineer with skills and knowledge in Azure and Terraform. Preferably more than 2 years of working experience. Can you help me find someone?"
+}
+
+### Health Check
+
+GET http://localhost:5000/api/health
+
+### API Info
+
+GET http://localhost:5000/api/info

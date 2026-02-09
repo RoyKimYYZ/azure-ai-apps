@@ -1,0 +1,26 @@
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    VIRTUAL_ENV="/app/.venv" \
+    PATH="/app/.venv/bin:/root/.local/bin:${PATH}"
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install dependencies with uv
+COPY pyproject.toml uv.lock /app/
+RUN uv sync --no-dev
+
+COPY . /app
+
+EXPOSE 8501
+
+CMD ["python", "-m", "streamlit", "run", "agent_rag_resume/ai_foundry_agent_sk.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.baseUrlPath=agent-rag-resume"]

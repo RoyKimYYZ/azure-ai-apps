@@ -1,0 +1,70 @@
+@baseUrl = https://<your-search-service>.search.windows.net
+@apiKey = <YOUR_AZURE_SEARCH_KEY>
+
+
+ ### List existing indexes by name
+ GET  {{baseUrl}}/indexes?api-version=2024-07-01&$select=name  HTTP/1.1
+   Content-Type: application/json
+   api-key: {{apiKey}}
+
+
+### Search for documents in the index
+POST {{baseUrl}}/indexes/resume-index/docs/search?api-version=2024-07-01  HTTP/1.1
+Content-Type: application/json
+api-key: {{apiKey}}
+
+{
+  //"search": "how much is earth covered by ocean water?",
+  // https://learn.microsoft.com/en-us/rest/api/searchservice/documents/search-post?view=rest-searchservice-2024-07-01&tabs=HTTP#vectorizabletextquery
+  "vectorQueries": [
+    {
+      "kind": "text",
+      "text": "how much is earth covered by ocean water?",
+      "fields": "text_vector"
+    }
+  ],
+//   "searchFields": "content",
+   "select": "parent_id, title, locations, chunk_id, document_type, author",
+  "count": true
+}
+
+
+### Search for documents in the index
+POST {{baseUrl}}/indexes/py-rag-tutorial-idx/docs/search?api-version=2024-07-01  HTTP/1.1
+Content-Type: application/json
+api-key: {{apiKey}}
+
+{
+  //"search": "how much is earth covered by ocean water?",
+  // https://learn.microsoft.com/en-us/rest/api/searchservice/documents/search-post?view=rest-searchservice-2024-07-01&tabs=HTTP#vectorizabletextquery
+  "vectorQueries": [
+    {
+      "kind": "text",
+      "text": "devops",
+      "fields": "text_vector"
+    }
+  ],
+//   "searchFields": "content",
+//   "select": "chunk",
+  "count": true
+}
+
+### Search for documents in the index
+POST {{baseUrl}}/indexes/py-rag-tutorial-idx/docs/search?api-version=2024-07-01  HTTP/1.1
+Content-Type: application/json
+api-key: {{apiKey}}
+
+{
+  "search": "how much is earth covered by ocean water?",
+  // https://learn.microsoft.com/en-us/rest/api/searchservice/documents/search-post?view=rest-searchservice-2024-07-01&tabs=HTTP#vectorizabletextquery
+  "vectorQueries": [
+    {
+      "kind": "text",
+      "text": "when are night time lights brighter in the United States?",
+      "fields": "text_vector"
+    }
+  ],
+//   "searchFields": "content",
+//   "select": "content",
+  "count": true
+}

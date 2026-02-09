@@ -1,0 +1,18 @@
+# Kubernetes
+.kube/
+kubeconfig
+*kubeconfig
+*.kubeconfig
+*.kubeconfig.*
+# Ignores any file with the ".kube" extension in this directory or below.
+# The leading "*" is a wildcard matching any filename, and ".kube" is the required suffix.
+*.kube
+
+# Kubernetes secrets (avoid committing)
+**/secret*.yaml
+**/*-secret.yaml
+**/*-secrets.yaml
+**/secrets*.yaml
+
+# Helm packages
+*.tgz

@@ -1,0 +1,28 @@
+[project]
+name = "agentframework"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "ruff>=0.14.14",
+]
+[tool.ruff]  # Ruff configuration table (Python linter/formatter)
+
+line-length = 300  # Maximum allowed line length before Ruff reports formatting/lint issues
+target-version = "py313"  # Target Python version for parsing/rule behavior (Python 3.13)
+lint.select = ["E", "F", "I", "UP", "B", "SIM", "W"]  # Enable these rule families (pycodestyle errors, pyflakes, imports, pyupgrade, bugbear, simplify, warnings)
+lint.ignore = ["E501"]  # Disable specific rules (E501 = line too long)
+lint.fixable = ["ALL"]  # Allow Ruff to auto-fix all fixable rules when run with `--fix`
+exclude = [".venv", "__pycache__", "build", "dist"]  # Paths Ruff should skip when scanning files
+
+[tool.mypy]  # mypy configuration (static type checker)
+python_version = "3.13"  # Target Python version for type checking
+warn_unused_ignores = true  # Warn about unnecessary # type: ignore
+warn_redundant_casts = true  # Warn about redundant casts
+warn_unused_configs = true  # Warn about unused config options
+ignore_missing_imports = true  # Keep flexible: don't fail on missing 3rd-party stubs

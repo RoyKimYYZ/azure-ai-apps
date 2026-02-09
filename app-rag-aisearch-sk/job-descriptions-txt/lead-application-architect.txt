@@ -1,0 +1,46 @@
+Job description:
+
+The Lead Application Architect plays a pivotal role in shaping the technological future of our organization. This position is responsible for designing and implementing robust, scalable, and innovative application architectures that align with business objectives and drive competitive advantage. The Lead Application Architect will provide technical leadership, guidance, and mentorship to development teams, ensuring the delivery of high-quality solutions that meet the evolving needs of our customers and stakeholders.
+
+Global Human Resources Technology provides the technology and tools for Scotiabank to attract, hire, retain, invest in, compensate, and reward its workforce globally. Our technology team is a dynamic and collaborative group of professionals dedicated to pushing the boundaries of innovation. We foster a culture of continuous learning, where team members are encouraged to explore new technologies, share ideas. We value diversity, inclusion, and a healthy work-life balance.
+
+This role offers a unique opportunity to influence the direction of our technology strategy and make a significant impact on the success of our organization. The Lead Application Architect (Director) will work closely with senior leaders, product managers, and development teams to define application architectures, select appropriate technologies, and ensure alignment with enterprise standards. This role also involves mentoring junior architects and developers, promoting best practices, and driving innovation across the organization.
+
+In This Role You Will
+
+
+
+Architecture Vision & Strategy: Develop the application architecture roadmap, strategy, and focus areas in collaboration with leadership and stakeholders. Assess current state, future needs, and industry trends.
+Technical Leadership & Governance: Guide development teams in architectural standards, patterns (microservices, event-driven) & code quality. Oversee operational excellence.
+Solution Design & Innovation: Design scalable cloud applications (GCP, Azure). Evaluate emerging tech for performance and security improvements.
+Stakeholder Alignment: Communicate architectural designs to stakeholders, ensuring solutions meet business, security, enterprise standards and compliance.
+Roadmap Execution & Mentorship: Lead implementation of roadmaps. Mentor architects and engineers, fostering knowledge sharing and collaboration.
+
+
+Do you have the skills that will enable you to succeed in this role?
+
+
+
+5+ years of experience in Technology Architecture, technology strategy
+Strong experience developing solutions on major Cloud providers such as GCP and Azure.
+Experience in data architecture and application engineering
+Exceptional analytical and problem-solving skills and familiarity with major programming languages.
+Strong understanding of architectural patterns, such as microservices, event-driven architecture, and RESTful APIs.
+Excellent communication, presentation, and interpersonal skills, ability to influence and lead technical teams.
+Experience with DevOps practices and CI/CD pipelines.
+Undergraduate degree in engineering or a related field.
+
+
+Yilei Wang (she/her) | RECRUITER
+
+ 
+
+OFFICE (647) 493-3195
+
+EMAIL  yilei.wang@motionrecruitment.com
+
+LINKEDIN  www.linkedin.com/in/yilei-wang2002
+
+ 
+
+MOTION RECRUITMENT   |   151 Yonge St.  //  Suite 601//  Toronto, ON M5C 2W7

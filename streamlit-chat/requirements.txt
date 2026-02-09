@@ -1,0 +1,18 @@
+openai 
+streamlit
+python-dotenv 
+azure-identity
+azure-core
+azure-search-documents
+azure-storage-blob
+aiohttp
+streamlit-chat
+
+semantic-kernel
+semantic-kernel[azure]
+semantic-kernel-extensions-memory   
+streamlit
+prompt-toolkit
+prompty 
+azure-ai-inference[prompts] # prompting tools for the Azure AI service
+azure-ai-projects 

@@ -1,0 +1,20 @@
+---
+name: Intent Mapping Prompt
+description: Intent Mapping Prompt
+model:
+    api: chat
+    configuration:
+        azure_deployment: gpt-4o
+inputs:
+    conversation:
+        type: array
+---
+You are a smart classifier. Given a user message, classify the intent into one of:
+- "ask_document" — if the user is asking about contents of indexed documents
+- "chitchat" — if the user is making casual conversation
+- "other" — if the question doesn’t match any known category
+
+User Input:
+{{ user_input }}
+
+Intent:

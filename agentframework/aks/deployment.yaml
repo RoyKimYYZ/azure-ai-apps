@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentframework-chatbot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agentframework-chatbot
+  template:
+    metadata:
+      labels:
+        app: agentframework-chatbot
+    spec:
+      containers:
+        - name: agentframework-chatbot
+          image: rkimacr.azurecr.io/agentframework-chatbot:v1
+          imagePullPolicy: Always
+          command: ["python", "-m", "streamlit"]
+          args:
+            - "run"
+            - "chatbot/chatbot.py"
+            - "--server.address=0.0.0.0"
+            - "--server.port=8501"
+            - "--server.baseUrlPath=agentframework-chatbot"
+          ports:
+            - containerPort: 8501
+          envFrom:
+            - configMapRef:
+                name: agentframework-chatbot-config
+            - secretRef:
+                name: agentframework-chatbot-secrets
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /agentframework-chatbot/_stcore/health
+              port: 8501
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /agentframework-chatbot/_stcore/health
+              port: 8501
+            initialDelaySeconds: 30
+            periodSeconds: 20

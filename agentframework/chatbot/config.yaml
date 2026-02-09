@@ -1,0 +1,47 @@
+# Chatbot configuration
+# Values can be resolved from environment variables at runtime.
+
+providers:
+  - name: AI Foundry
+    endpoint_env: AI_FOUNDRY_ENDPOINT
+    api_key_env: AI_FOUNDRY_API_KEY
+    models_env: [gpt-5.2-chat, DeepSeek-V3.2]
+    model_env: AI_FOUNDRY_MODEL
+    default_model: gpt-5.2-chat
+
+  - name: KAITO
+    endpoint_env: KAITO_INFERENCE_ENDPOINT
+    models_env: [phi-4-mini-instruct]
+    default_endpoint: http://workspace-phi-4-mini.default.svc.cluster.local:80/v1/chat/completions
+    default_model: phi-4-mini-instruct
+
+  - name: KAITO RAGEngine
+    endpoint_env: KAITO_RAGENGINE_ENDPOINT
+    # api_key_env omitted – cluster-internal, no auth needed
+    models_env: [phi-4-mini-instruct]
+    # TODO: Replace with your actual RAGEngine K8s service URL
+    default_endpoint: http://ragengine-example.default.svc.cluster.local:80/v1/chat/completions
+    default_model: phi-4-mini-instruct
+    # RAGEngine-specific settings
+    index_name_env: KAITO_RAGENGINE_INDEX
+    default_index_name: rag_index
+    embedding_model: BAAI/bge-small-en-v1.5
+
+agents:
+  - name: General Chat Assistant
+    provider: AI Foundry
+    model: gpt-5.2-chat
+  - name: Kaito Assistant
+    provider: KAITO
+    model: phi-4-mini-instruct
+  - name: KAITO RAG Assistant
+    provider: KAITO RAGEngine
+    model: phi-4-mini-instruct
+  - name: Fitness Nutrition
+    provider: AI Foundry
+  - name: Agent1 Demo
+    provider: AI Foundry
+
+ui:
+  log_level_env: LOG_LEVEL
+  debug_log_max_lines_env: DEBUG_LOG_MAX_LINES

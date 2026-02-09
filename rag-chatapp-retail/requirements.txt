@@ -1,0 +1,11 @@
+azure-ai-projects # client library for using the Azure AI service
+azure-ai-inference[prompts] # prompting tools for the Azure AI service
+azure-identity # for authenticating with Azure services
+azure-search-documents # for searching documents
+pandas # for data manipulation
+python-dotenv # for loading environment variables
+opentelemetry-api # for tracing
+opentelemetry-sdk # for tracing
+opentelemetry-instrumentation # for tracing
+opentelemetry-instrumentation-logging # for logging
+flask

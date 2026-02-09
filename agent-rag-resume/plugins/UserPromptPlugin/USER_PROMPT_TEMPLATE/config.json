@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "description": "Compose an answer grounded in retrieved context and enumerated documents.",
+  "type": "chat_completion",
+  "input_variables": [
+    { "name": "question", "description": "User question", "default": "" },
+    { "name": "context", "description": "Retrieved grounding context", "default": "" },
+    { "name": "documents", "description": "Enumerated retrieved documents", "default": "" }
+  ],
+  "execution_settings": {
+    "default": {
+      "temperature": 0.1,
+      "max_tokens": 800
+    }
+  }
+}

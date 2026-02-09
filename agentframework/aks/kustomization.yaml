@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- configmap.yaml
+- secret.yaml
+- deployment.yaml
+- service.yaml
+- hpa.yaml
+- ingress.yaml
+images:
+- name: rkimacr.azurecr.io/agentframework
+  newName: rkimacr.azurecr.io/agentframework-chatbot
+  newTag: v1
+- name: rkimacr.azurecr.io/agentframework-chatbot
+  newTag: v1

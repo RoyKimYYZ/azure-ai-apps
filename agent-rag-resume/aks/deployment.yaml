@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-rag-resume
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-rag-resume
+  template:
+    metadata:
+      labels:
+        app: agent-rag-resume
+    spec:
+      containers:
+        - name: agent-rag-resume
+          image: rkimacr.azurecr.io/agent-rag-resume:v1
+          imagePullPolicy: Always
+          command: ["python", "-m", "streamlit"]
+          args:
+            - "run"
+            - "agent_rag_resume/ai_foundry_agent_sk.py"
+            - "--server.address=0.0.0.0"
+            - "--server.port=8501"
+            - "--server.baseUrlPath=agent-rag-resume"
+          ports:
+            - containerPort: 8501
+          envFrom:
+            - configMapRef:
+                name: agent-rag-resume-config
+            - secretRef:
+                name: agent-rag-resume-secrets
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /agent-rag-resume/_stcore/health
+              port: 8501
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /agent-rag-resume/_stcore/health
+              port: 8501
+            initialDelaySeconds: 30
+            periodSeconds: 20

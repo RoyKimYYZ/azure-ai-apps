@@ -1,0 +1,20 @@
+---
+name: Response Prompt
+description: Response Prompt
+model:
+    api: chat
+    configuration:
+        azure_deployment: gpt-4o
+inputs:
+    conversation:
+        type: array
+---
+You are a helpful assistant. Answer the user's question based only on the provided document excerpts. If the answer is not in the documents, say you don't know.
+
+Context:
+{{ document_chunks }}
+
+Question:
+{{ user_input }}
+
+Answer:
