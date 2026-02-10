@@ -1,6 +1,6 @@
 # Azure AI Apps
 
-A collection of Python demo applications for engineers learning how to build **Retrieval-Augmented Generation (RAG)** pipelines, **AI agent orchestration**, and **chatbot UIs** on Azure AI services.
+A collection of Python demo applications for engineers learning how to build **Retrieval-Augmented Generation (RAG)** pipelines, **AI agent orchestration**, and **chatbot UIs** on Azure AI services. One key focus is to show how to leverage AI hosting capabilities on Azure Kubernetes such as KAITO inference AI models and hosting the applications in AKS. 
 
 These are demo and learning projects for myself that I [blog](https://www.roykim.ca/) about, use as demos for online and in-person tech presentations and show case in my youtube channel https://youtube.com/roykimyyz
 
