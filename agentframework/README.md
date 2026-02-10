@@ -6,8 +6,14 @@ The **Microsoft Agent Framework SDK** is a Python library for building AI agent 
 
 After building individual Streamlit chatbots directed to different AI Providers and Models (Open AI, AI Foundry, AKS KAITO hosted, KAITO RAG Engine, etc), I decided to build an extensible Streamlit chat bot that I can orchestrate, configure and select various AI providers for my agents. **This gives me my own playground and testing platform for testing my agents and AI providers/models**. 
 
+General chat bot agent using AI Foundry
+![AI Foundry Chatbot](agentframework-chatbot-aifoundry.jpg)
 
-<Screenshot>
+General chat bot using AKS hosted KAITO phi-4 mini model
+![](agentframework-chatbot-kaito-inference.jpg)
+
+RAG Agent using AKS hosted RAG Engine and KAIT phi-4 mini model
+![KAITO RAG Agent](agentframework-chatbot-kaito-rag.jpg)
 
 ### Microsoft Agent Framework Implementation Approach
 
@@ -156,7 +162,6 @@ http://<INGRESS_EXTERNAL_IP>/agentframework-chatbot
 | Secret | `agentframework-chatbot-secrets` | API keys (git-ignored) |
 
 ---
-
 
 
 ### The BaseChatClient Pattern: One Abstraction, Many Backends

@@ -12,12 +12,12 @@ Each sub-project is a standalone, runnable demo that highlights a different arch
 
 | # | Project | What You'll Learn | Key Technologies |
 |---|---------|-------------------|------------------|
-| 1 | [agent-rag-resume](#1-agent-rag-resume) | Building a RAG agent with Semantic Kernel plugin system | Semantic Kernel, Azure AI Search, Streamlit |
-| 2 | [agentframework](#2-agentframework) | Multi-agent orchestration with Microsoft Agent Framework SDK on AKS | Agent Framework SDK, KAITO, AKS |
+| 1 | [agent-rag-resume](#1-agent-rag-resume) | Building a RAG agent with Semantic Kernel plugin system | Semantic Kernel, Azure AI Search, Streamlit, Azure Kubernetes Service |
+| 2 | [agentframework](#2-agentframework) | Streamlit chatbot with Multi-agent orchestration with Microsoft Agent Framework SDK on AKS | Agent Framework SDK, KAITO, AKS |
 | 3 | [app-rag-aisearch-sk](#3-app-rag-aisearch-sk) | SK vector store connectors, memory plugins, and search skillset pipelines | Semantic Kernel (plugins + memory), Azure AI Search, Flask |
 | 4 | [rag-app-resumes](#4-rag-app-resumes) | End-to-end RAG indexer pipeline with skillsets and Prompty templates | Azure AI Projects SDK, Prompty, OpenTelemetry |
 | 5 | [rag-chatapp-retail](#5-rag-chatapp-retail) | RAG with AI evaluation (groundedness metrics) | Azure AI Evaluation SDK, Prompty |
-| 6 | [streamlit-chat](#6-streamlit-chat) | Streamlit chat UI with basic and agentic variants | Streamlit, Semantic Kernel, Azure AI Agents |
+| 6 | [streamlit-chat](#6-streamlit-chat) | Streamlit chat UI with basic and agentic variants. Basic implementation. | Streamlit, Semantic Kernel, Azure AI Agents |
 | 7 | [python-uv-project-template](#7-python-uv-project-template) | Starter template for uv-based Python projects | uv, Ruff, mypy |
 
 ---
