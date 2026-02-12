@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-chatapp-retail-config
+data:
+  ENVIRONMENT: "dev"
+  LOG_LEVEL: "INFO"
+  PORT: "8000"
+  AISEARCH_INDEX_NAME: "example-index"
+  AISEARCH_INDEX_RESUME: "resume-index"
+  EMBEDDINGS_MODEL: "text-embedding-ada-002"
+  INTENT_MAPPING_MODEL: "gpt-4o-mini"
+  CHAT_MODEL: "gpt-4o-mini"
+  EVALUATION_MODEL: "gpt-4o-mini"
+  AZURE_OPENAI_ENDPOINT: "https://<your-openai-resource>.openai.azure.com/"

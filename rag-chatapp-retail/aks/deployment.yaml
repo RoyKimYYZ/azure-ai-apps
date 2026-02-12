@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-chatapp-retail
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rag-chatapp-retail
+  template:
+    metadata:
+      labels:
+        app: rag-chatapp-retail
+    spec:
+      containers:
+        - name: rag-chatapp-retail
+          image: rkimacr.azurecr.io/rag-chatapp-retail:v1
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: rag-chatapp-retail-config
+            - secretRef:
+                name: rag-chatapp-retail-secrets
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 20
