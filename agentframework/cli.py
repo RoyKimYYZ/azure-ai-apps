@@ -19,9 +19,9 @@ def agent1_command() -> None:
 
 
 @cli.command(name="fitness")
-@click.argument("image_path", type=click.Path(exists=True, dir_okay=False, path_type=str))
-def fitness_command(image_path: str) -> None:
-    """Run the fitness agent (image-based macro estimates)."""
+@click.argument("image_path", required=False, type=click.Path(exists=True, dir_okay=False, path_type=str))
+def fitness_command(image_path: str | None) -> None:
+    """Run the fitness agent in multi-turn mode; optional image path starts with a photo ingestion turn."""
     asyncio.run(fitness_agent(image_path))
 
 

@@ -1,0 +1,650 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sqlite3
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Literal, Protocol
+from uuid import uuid4
+
+from agent_framework import ChatMessage, Context, ContextProvider
+from pydantic import BaseModel, Field, model_validator
+
+
+def utc_now_iso() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _safe_json_loads(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        loaded = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _json_default(value: Any) -> Any:
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        try:
+            return to_dict()
+        except Exception:
+            pass
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return model_dump()
+        except Exception:
+            pass
+    return str(value)
+
+
+def _to_json_text(value: Any) -> str:
+    return json.dumps(value, default=_json_default, ensure_ascii=False)
+
+
+def _normalize_thread_state(state: dict[str, Any]) -> dict[str, Any]:
+    store = state.get("chat_message_store_state")
+    if not isinstance(store, dict):
+        return state
+
+    messages = store.get("messages")
+    if not isinstance(messages, list):
+        return state
+
+    normalized_messages: list[Any] = []
+    for message in messages:
+        if isinstance(message, dict):
+            try:
+                normalized_messages.append(ChatMessage.from_dict(message))
+                continue
+            except Exception:
+                normalized_messages.append(message)
+                continue
+        normalized_messages.append(message)
+
+    store["messages"] = normalized_messages
+    state["chat_message_store_state"] = store
+    return state
+
+
+class ProfileUpdate(BaseModel):
+    field: Literal[
+        "name",
+        "birthday_mmddyyyy",
+        "height_value",
+        "height_unit",
+        "city",
+        "country",
+        "sex",
+        "timezone",
+        "external_user_key",
+    ]
+    value: str | float | int | None
+
+
+class MealUpsert(BaseModel):
+    occurred_at: str | None = None
+    meal_type: Literal["breakfast", "lunch", "dinner", "snack", "other"] | None = None
+    source_image_uri: str | None = None
+    source_hash: str | None = None
+    unit_system: Literal["metric", "imperial"] | None = None
+    notes: str | None = None
+
+
+class MealItemUpsert(BaseModel):
+    food_label: str
+    quantity_value: float | None = None
+    quantity_unit: str | None = None
+    confidence: float | None = None
+    notes: str | None = None
+
+
+class MacroEventInsert(BaseModel):
+    calories_kcal: float | None = Field(default=None, ge=0)
+    protein_g: float | None = Field(default=None, ge=0)
+    carbs_g: float | None = Field(default=None, ge=0)
+    fat_g: float | None = Field(default=None, ge=0)
+    fiber_g: float | None = Field(default=None, ge=0)
+    sugar_g: float | None = Field(default=None, ge=0)
+    sodium_mg: float | None = Field(default=None, ge=0)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    model_name: str | None = None
+    model_version: str | None = None
+    prompt_version: str | None = None
+    notes: str | None = None
+
+
+class BodyMetricEventInsert(BaseModel):
+    metric_type: Literal["weight", "waist", "blood_pressure"]
+    value_primary: float = Field(gt=0)
+    value_secondary: float | None = Field(default=None, gt=0)
+    unit: Literal["lbs", "kg", "in", "cm", "mmHg"]
+    observed_at: str | None = None
+    source: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    notes: str | None = None
+
+    # Validation to ensure blood_pressure has value_secondary and unit mmHg, and that weight and waist have appropriate units.
+    # @model_validator is used here to perform cross-field validation after the initial model validation.
+    @model_validator(mode="after")
+    def validate_metric_shape(self) -> "BodyMetricEventInsert":
+        if self.metric_type == "blood_pressure":
+            if self.value_secondary is None:
+                raise ValueError("value_secondary is required for blood_pressure")
+            if self.unit != "mmHg":
+                raise ValueError("blood_pressure unit must be mmHg")
+            return self
+
+        if self.value_secondary is not None:
+            raise ValueError("value_secondary must be null unless metric_type is blood_pressure")
+
+        if self.metric_type == "weight" and self.unit not in {"lbs", "kg"}:
+            raise ValueError("weight unit must be lbs or kg")
+        if self.metric_type == "waist" and self.unit not in {"in", "cm"}:
+            raise ValueError("waist unit must be in or cm")
+        return self
+
+
+class PersistenceOp(BaseModel):
+    operation: Literal["insert", "update", "upsert"]
+    target: str
+    idempotency_key: str | None = None
+
+
+class PhotoSubmissionStructuredOutput(BaseModel):
+    profile_updates: list[ProfileUpdate] = Field(default_factory=list)
+    meal_upsert: MealUpsert | None = None
+    meal_items_upsert: list[MealItemUpsert] = Field(default_factory=list)
+    macro_events_insert: list[MacroEventInsert] = Field(default_factory=list)
+    body_metric_events_insert: list[BodyMetricEventInsert] = Field(default_factory=list)
+    persistence_ops: list[PersistenceOp] = Field(default_factory=list)
+
+
+class TextTurnStructuredOutput(BaseModel):
+    profile_updates: list[ProfileUpdate] = Field(default_factory=list)
+    body_metric_events_insert: list[BodyMetricEventInsert] = Field(default_factory=list)
+    persistence_ops: list[PersistenceOp] = Field(default_factory=list)
+
+
+@dataclass
+class IngestionRunStart:
+    run_id: str
+    created_at: str
+
+
+class FitnessMemoryRepository(Protocol):
+    def get_read_model(self, user_id: str, *, metric_limit: int = 10, meal_limit: int = 10) -> dict[str, Any]: ...
+
+    def start_ingestion_run(
+        self,
+        *,
+        user_id: str,
+        source_type: str,
+        idempotency_key: str | None,
+        request_json: dict[str, Any] | None,
+    ) -> IngestionRunStart: ...
+
+    def finish_ingestion_run(
+        self,
+        *,
+        run_id: str,
+        status: Literal["completed", "failed"],
+        response_json: dict[str, Any] | None,
+        structured_output_json: dict[str, Any] | None,
+        error: str | None,
+    ) -> None: ...
+
+    def apply_photo_submission(
+        self,
+        *,
+        user_id: str,
+        image_path: str,
+        payload: PhotoSubmissionStructuredOutput,
+        raw_structured_output: dict[str, Any],
+        idempotency_key: str | None,
+    ) -> dict[str, Any]: ...
+
+    def apply_text_turn_submission(
+        self,
+        *,
+        user_id: str,
+        payload: TextTurnStructuredOutput,
+        raw_structured_output: dict[str, Any],
+        idempotency_key: str | None,
+    ) -> dict[str, Any]: ...
+
+    def load_thread_state(self, *, user_id: str, session_key: str, agent_name: str) -> dict[str, Any] | None: ...
+
+    def upsert_thread_state(
+        self,
+        *,
+        user_id: str,
+        session_key: str,
+        agent_name: str,
+        session_state: dict[str, Any],
+        summary_text: str | None,
+    ) -> None: ...
+
+
+class SQLiteFitnessMemoryRepository:
+    def __init__(self, db_path: str | Path) -> None:
+        self.db_path = Path(db_path)
+
+    def _conn(self) -> sqlite3.Connection:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+
+    def _ensure_user(self, conn: sqlite3.Connection, user_id: str) -> None:
+        conn.execute(
+            """
+            INSERT INTO users (user_id, name, created_at, updated_at, is_active)
+            VALUES (?, ?, ?, ?, 1)
+            ON CONFLICT(user_id) DO UPDATE SET updated_at = excluded.updated_at
+            """,
+            (user_id, user_id, utc_now_iso(), utc_now_iso()),
+        )
+
+    def _apply_profile_updates(self, conn: sqlite3.Connection, user_id: str, updates: list[ProfileUpdate]) -> None:
+        if not updates:
+            return
+        assignments: list[str] = []
+        values: list[Any] = []
+        for update in updates:
+            assignments.append(f"{update.field} = ?")
+            values.append(update.value)
+        assignments.append("updated_at = ?")
+        values.append(utc_now_iso())
+        values.append(user_id)
+        conn.execute(f"UPDATE users SET {', '.join(assignments)} WHERE user_id = ?", values)
+
+    def _insert_body_metrics(self, conn: sqlite3.Connection, user_id: str, events: list[BodyMetricEventInsert]) -> int:
+        created = 0
+        for event in events:
+            conn.execute(
+                """
+                INSERT INTO body_metric_events (
+                    event_id, user_id, metric_type, value_primary, value_secondary,
+                    unit, observed_at, source, confidence, notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid4()),
+                    user_id,
+                    event.metric_type,
+                    event.value_primary,
+                    event.value_secondary,
+                    event.unit,
+                    event.observed_at or utc_now_iso(),
+                    event.source,
+                    event.confidence,
+                    event.notes,
+                    utc_now_iso(),
+                ),
+            )
+            created += 1
+        return created
+
+    def _aggregate_macros(self, events: list[MacroEventInsert]) -> MacroEventInsert:
+        if not events:
+            return MacroEventInsert()
+        summed = MacroEventInsert()
+        numeric_fields = ["calories_kcal", "protein_g", "carbs_g", "fat_g", "fiber_g", "sugar_g", "sodium_mg"]
+        for field_name in numeric_fields:
+            total = sum((getattr(event, field_name) or 0.0) for event in events)
+            if total > 0:
+                setattr(summed, field_name, total)
+        for field_name in ["confidence", "model_name", "model_version", "prompt_version", "notes"]:
+            first_value = next((getattr(event, field_name) for event in events if getattr(event, field_name) is not None), None)
+            setattr(summed, field_name, first_value)
+        return summed
+
+    def _upsert_meal_event(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: str,
+        image_path: str,
+        meal: MealUpsert | None,
+        macro_events: list[MacroEventInsert],
+        raw_structured_output: dict[str, Any],
+    ) -> str | None:
+        if meal is None and not macro_events:
+            return None
+
+        aggregate = self._aggregate_macros(macro_events)
+        meal_row = meal or MealUpsert()
+        source_hash = meal_row.source_hash
+        if not source_hash:
+            source_hash = hashlib.sha256(f"{user_id}:{image_path}".encode("utf-8")).hexdigest()
+
+        existing = conn.execute(
+            "SELECT meal_event_id FROM meal_events WHERE user_id = ? AND source_hash = ?",
+            (user_id, source_hash),
+        ).fetchone()
+
+        if existing:
+            meal_event_id = str(existing["meal_event_id"])
+            conn.execute(
+                """
+                UPDATE meal_events
+                SET occurred_at = ?, meal_type = ?, source_image_uri = ?,
+                    unit_system = ?, calories_kcal = ?, protein_g = ?, carbs_g = ?, fat_g = ?,
+                    fiber_g = ?, sugar_g = ?, sodium_mg = ?, confidence = ?, model_name = ?,
+                    model_version = ?, prompt_version = ?, llm_structured_output_json = ?, notes = ?
+                WHERE meal_event_id = ?
+                """,
+                (
+                    meal_row.occurred_at or utc_now_iso(),
+                    meal_row.meal_type,
+                    meal_row.source_image_uri or image_path,
+                    meal_row.unit_system,
+                    aggregate.calories_kcal,
+                    aggregate.protein_g,
+                    aggregate.carbs_g,
+                    aggregate.fat_g,
+                    aggregate.fiber_g,
+                    aggregate.sugar_g,
+                    aggregate.sodium_mg,
+                    aggregate.confidence,
+                    aggregate.model_name,
+                    aggregate.model_version,
+                    aggregate.prompt_version,
+                    json.dumps(raw_structured_output),
+                    aggregate.notes or meal_row.notes,
+                    meal_event_id,
+                ),
+            )
+            return meal_event_id
+
+        meal_event_id = str(uuid4())
+        conn.execute(
+            """
+            INSERT INTO meal_events (
+                meal_event_id, user_id, occurred_at, meal_type, source_image_uri, source_hash,
+                calories_kcal, protein_g, carbs_g, fat_g, fiber_g, sugar_g, sodium_mg,
+                unit_system, confidence, model_name, model_version, prompt_version,
+                llm_structured_output_json, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                meal_event_id,
+                user_id,
+                meal_row.occurred_at or utc_now_iso(),
+                meal_row.meal_type,
+                meal_row.source_image_uri or image_path,
+                source_hash,
+                aggregate.calories_kcal,
+                aggregate.protein_g,
+                aggregate.carbs_g,
+                aggregate.fat_g,
+                aggregate.fiber_g,
+                aggregate.sugar_g,
+                aggregate.sodium_mg,
+                meal_row.unit_system,
+                aggregate.confidence,
+                aggregate.model_name,
+                aggregate.model_version,
+                aggregate.prompt_version,
+                json.dumps(raw_structured_output),
+                aggregate.notes or meal_row.notes,
+                utc_now_iso(),
+            ),
+        )
+        return meal_event_id
+
+    def get_read_model(self, user_id: str, *, metric_limit: int = 10, meal_limit: int = 10) -> dict[str, Any]:
+        with self._conn() as conn:
+            profile_row = conn.execute(
+                """
+                SELECT user_id, external_user_key, name, birthday_mmddyyyy, height_value, height_unit,
+                       city, country, sex, timezone, created_at, updated_at, is_active
+                FROM users WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+            metric_rows = conn.execute(
+                """
+                SELECT event_id, metric_type, value_primary, value_secondary, unit, observed_at,
+                       source, confidence, notes, created_at
+                FROM body_metric_events
+                WHERE user_id = ?
+                ORDER BY observed_at DESC
+                LIMIT ?
+                """,
+                (user_id, metric_limit),
+            ).fetchall()
+            meal_rows = conn.execute(
+                """
+                SELECT meal_event_id, occurred_at, meal_type, source_image_uri, source_hash,
+                       calories_kcal, protein_g, carbs_g, fat_g, fiber_g, sugar_g, sodium_mg,
+                       unit_system, confidence, model_name, model_version, prompt_version,
+                       llm_structured_output_json, notes, created_at
+                FROM meal_events
+                WHERE user_id = ?
+                ORDER BY occurred_at DESC
+                LIMIT ?
+                """,
+                (user_id, meal_limit),
+            ).fetchall()
+
+        profile = dict(profile_row) if profile_row else {}
+        metrics = [dict(row) for row in metric_rows]
+        meals = [dict(row) for row in meal_rows]
+        return {"profile": profile, "recent_body_metrics": metrics, "recent_meals": meals}
+
+    # The following methods implement the protocol for starting and finishing ingestion runs, applying photo submission structured outputs, and loading/upserting thread state for agent sessions. These methods interact with the SQLite database to persist and retrieve the necessary information for the fitness agent's memory and context management.
+    def start_ingestion_run(
+        self,
+        *,
+        user_id: str,
+        source_type: str,
+        idempotency_key: str | None,
+        request_json: dict[str, Any] | None,
+    ) -> IngestionRunStart:
+        run_id = str(uuid4())
+        now = utc_now_iso()
+        with self._conn() as conn:
+            self._ensure_user(conn, user_id)
+            conn.execute(
+                """
+                INSERT INTO ingestion_runs (
+                    run_id, user_id, source_type, idempotency_key, request_json, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, 'started', ?)
+                """,
+                (run_id, user_id, source_type, idempotency_key, json.dumps(request_json or {}), now),
+            )
+        return IngestionRunStart(run_id=run_id, created_at=now)
+
+    def finish_ingestion_run(
+        self,
+        *,
+        run_id: str,
+        status: Literal["completed", "failed"],
+        response_json: dict[str, Any] | None,
+        structured_output_json: dict[str, Any] | None,
+        error: str | None,
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE ingestion_runs
+                SET status = ?, response_json = ?, structured_output_json = ?, error = ?
+                WHERE run_id = ?
+                """,
+                (
+                    status,
+                    json.dumps(response_json) if response_json is not None else None,
+                    json.dumps(structured_output_json) if structured_output_json is not None else None,
+                    error,
+                    run_id,
+                ),
+            )
+
+    def apply_photo_submission(
+        self,
+        *,
+        user_id: str,
+        image_path: str,
+        payload: PhotoSubmissionStructuredOutput,
+        raw_structured_output: dict[str, Any],
+        idempotency_key: str | None,
+    ) -> dict[str, Any]:
+        with self._conn() as conn:
+            self._ensure_user(conn, user_id)
+            self._apply_profile_updates(conn, user_id, payload.profile_updates)
+            body_metric_count = self._insert_body_metrics(conn, user_id, payload.body_metric_events_insert)
+            meal_event_id = self._upsert_meal_event(
+                conn,
+                user_id=user_id,
+                image_path=image_path,
+                meal=payload.meal_upsert,
+                macro_events=payload.macro_events_insert,
+                raw_structured_output=raw_structured_output,
+            )
+        return {
+            "idempotency_key": idempotency_key,
+            "meal_event_id": meal_event_id,
+            "body_metric_count": body_metric_count,
+            "profile_update_count": len(payload.profile_updates),
+            "meal_items_detected": len(payload.meal_items_upsert),
+        }
+
+    def apply_text_turn_submission(
+        self,
+        *,
+        user_id: str,
+        payload: TextTurnStructuredOutput,
+        raw_structured_output: dict[str, Any],
+        idempotency_key: str | None,
+    ) -> dict[str, Any]:
+        with self._conn() as conn:
+            self._ensure_user(conn, user_id)
+            self._apply_profile_updates(conn, user_id, payload.profile_updates)
+            body_metric_count = self._insert_body_metrics(conn, user_id, payload.body_metric_events_insert)
+        return {
+            "idempotency_key": idempotency_key,
+            "profile_update_count": len(payload.profile_updates),
+            "body_metric_count": body_metric_count,
+            "structured_output_keys": sorted(raw_structured_output.keys()),
+        }
+
+    def load_thread_state(self, *, user_id: str, session_key: str, agent_name: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT session_json
+                FROM agent_session_memory
+                WHERE user_id = ? AND session_key = ? AND agent_name = ?
+                LIMIT 1
+                """,
+                (user_id, session_key, agent_name),
+            ).fetchone()
+        if row is None:
+            return None
+        loaded = _safe_json_loads(row["session_json"])
+        return _normalize_thread_state(loaded)
+
+    def upsert_thread_state(
+        self,
+        *,
+        user_id: str,
+        session_key: str,
+        agent_name: str,
+        session_state: dict[str, Any],
+        summary_text: str | None,
+    ) -> None:
+        memory_id = hashlib.sha256(f"{user_id}:{session_key}:{agent_name}".encode("utf-8")).hexdigest()[:64]
+        now = utc_now_iso()
+        with self._conn() as conn:
+            self._ensure_user(conn, user_id)
+            existing = conn.execute(
+                """
+                SELECT memory_id
+                FROM agent_session_memory
+                WHERE user_id = ? AND session_key = ? AND agent_name = ?
+                LIMIT 1
+                """,
+                (user_id, session_key, agent_name),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE agent_session_memory
+                    SET session_json = ?, summary_text = ?, last_event_at = ?
+                    WHERE memory_id = ?
+                    """,
+                    (_to_json_text(session_state), summary_text, now, str(existing["memory_id"])),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO agent_session_memory (
+                        memory_id, user_id, session_key, agent_name, session_json,
+                        summary_text, last_event_at, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (memory_id, user_id, session_key, agent_name, _to_json_text(session_state), summary_text, now, now),
+                )
+
+
+class AzureSqlFitnessMemoryRepository:
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        raise NotImplementedError(
+            "Azure SQL adapter is not implemented yet. Set FITNESS_DB_BACKEND=sqlite for now. "
+            "Use the repository interface in this module for migration-safe implementation."
+        )
+
+
+class DatabaseContextProvider(ContextProvider):
+    def __init__(self, repository: FitnessMemoryRepository, user_id: str, *, metric_limit: int = 5, meal_limit: int = 5) -> None:
+        self.repository = repository
+        self.user_id = user_id
+        self.metric_limit = metric_limit
+        self.meal_limit = meal_limit
+
+    async def invoking(self, messages: Any, **kwargs: Any) -> Context:
+        model = self.repository.get_read_model(self.user_id, metric_limit=self.metric_limit, meal_limit=self.meal_limit)
+        profile = model.get("profile", {})
+        metrics = model.get("recent_body_metrics", [])
+        meals = model.get("recent_meals", [])
+        if not profile and not metrics and not meals:
+            return Context()
+
+        profile_text = json.dumps(profile, ensure_ascii=False)
+        metrics_text = json.dumps(metrics, ensure_ascii=False)
+        meals_text = json.dumps(meals, ensure_ascii=False)
+        instructions = (
+            f"{self.DEFAULT_CONTEXT_PROMPT}\n"
+            "Use this durable fitness memory context when responding.\n"
+            f"User profile: {profile_text}\n"
+            f"Recent body metrics: {metrics_text}\n"
+            f"Recent meals/macros: {meals_text}\n"
+            "If the user asks health or diet questions, ground your answer in these tracked values."
+        )
+        return Context(instructions=instructions)
+
+
+def extract_idempotency_key(payload: PhotoSubmissionStructuredOutput, image_bytes: bytes, user_id: str) -> str:
+    op_key = next((op.idempotency_key for op in payload.persistence_ops if op.idempotency_key), None)
+    if op_key:
+        return op_key
+    return hashlib.sha256(image_bytes + user_id.encode("utf-8")).hexdigest()
+
+
+def get_fitness_repository(db_path: str | Path | None = None) -> FitnessMemoryRepository:
+    backend = os.getenv("FITNESS_DB_BACKEND", "sqlite").strip().lower()
+    if backend == "sqlite":
+        path = Path(db_path) if db_path is not None else Path(__file__).parent / "agentframework.db"
+        return SQLiteFitnessMemoryRepository(path)
+    if backend in {"azuresql", "azure_sql", "azure-sql"}:
+        return AzureSqlFitnessMemoryRepository()
+    raise ValueError(f"Unsupported FITNESS_DB_BACKEND={backend}")

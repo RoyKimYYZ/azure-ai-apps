@@ -3,6 +3,8 @@ node_modules/
 npm-debug.log
 yarn-error.log
 
+todo-notes.txt
+
 # Logs
 logs/
 *.log
@@ -58,3 +60,5 @@ Thumbs.db
 # Environment files with secrets
 .env
 *.env
+agentframework/agentframework.db
+agentframework/agentframework.db
