@@ -4,21 +4,19 @@ import sys
 import logging
 from pathlib import Path
 import json
-import mimetypes
-import random
-from prompt_toolkit import prompt
 import yaml
-from agent_framework import ChatAgent, AgentRunResponse, ChatMessage, DataContent, TextContent, UsageContent, UsageDetails
+from agent_framework import ChatAgent
 from agent_framework.azure import AzureOpenAIChatClient
 from azure.identity import AzureCliCredential
 from dotenv import load_dotenv
 from jinja2 import Template
-from openai import RateLimitError
 from pydantic import BaseModel
 
 from config import Settings
 from db import DEFAULT_DB_PATH, StructuredOutputStore
 from ai_chat_client import KaitoChatClient
+from run_utils import run_with_retry, run_with_stream
+from logging_colors import ColorLogFormatter, strip_ansi, supports_color
 
 
 def _str_to_bool(value: str | None, default: bool) -> bool:
@@ -32,24 +30,48 @@ def configure_logging() -> None:
     log_to_console = _str_to_bool(os.getenv("LOG_TO_CONSOLE"), True)
     log_to_file = _str_to_bool(os.getenv("LOG_TO_FILE"), False)
     log_file_path = os.getenv("LOG_FILE", "agentframework.log")
+    log_color = _str_to_bool(os.getenv("LOG_COLOR"), True) and supports_color(sys.stdout)
 
     handlers: list[logging.Handler] = []
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    console_formatter: logging.Formatter
+    if log_color:
+        console_formatter = ColorLogFormatter(fmt)
+    else:
+        console_formatter = logging.Formatter(fmt)
+
+    file_formatter = logging.Formatter(fmt)
 
     if log_to_console:
         console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(formatter)
+        console_handler.setFormatter(console_formatter)
         handlers.append(console_handler)
 
     if log_to_file:
         file_handler = logging.FileHandler(log_file_path)
-        file_handler.setFormatter(formatter)
+        file_handler.setFormatter(file_formatter)
+        # Keep file logs plain even if console logs use ANSI colors.
+        class _StripAnsiFilter(logging.Filter):
+            def filter(self, record: logging.LogRecord) -> bool:
+                try:
+                    record.msg = strip_ansi(str(record.getMessage()))
+                    record.args = ()
+                except Exception:
+                    pass
+                return True
+
+        file_handler.addFilter(_StripAnsiFilter())
         handlers.append(file_handler)
 
     if not handlers:
         handlers.append(logging.NullHandler())
 
-    logging.basicConfig(level=log_level, handlers=handlers)
+    # If any library configured logging before we run (common in CLIs), `basicConfig`
+    # becomes a no-op unless `force=True`.
+    try:
+        logging.basicConfig(level=log_level, handlers=handlers, force=True)
+    except TypeError:
+        logging.basicConfig(level=log_level, handlers=handlers)
 
 
 logger = logging.getLogger(__name__)
@@ -85,20 +107,15 @@ class WorkflowPlan(BaseModel):
 
 
 class StructuredOutput(BaseModel):
+    """ Represents a structured output format with steps, rationale, and type.
+    Args:
+        BaseModel (_type_): _description_
+    """
     steps: list[str]
     rationale: str
     type: str
 
-
-class MacroNutrients(BaseModel):
-    calories: float
-    protein_g: float
-    carbs_g: float
-    fat_g: float
-    confidence: str
-    notes: str
-
-
+# Utility functions
 def load_prompt_template(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle)
@@ -110,67 +127,20 @@ def load_prompt_template(path: Path) -> dict:
 
     return data
 
-
+   
 def render_instructions(template: str, context: dict[str, str]) -> str:
+    """Render instructions from a template and context.
+
+    Args:
+        template (str): The template string containing placeholders.
+        context (dict[str, str]): A dictionary mapping placeholders to their values.
+
+    Returns:
+        str: The rendered instructions with placeholders replaced by context values.
+    """
     if "{{" in template and "}}" in template:
         return Template(template).render(**context)
     return template.format(**context)
-
-
-def format_usage(usage: UsageDetails) -> str:
-    return (
-        f"input={usage.input_token_count or 0} "
-        f"output={usage.output_token_count or 0} "
-        f"total={usage.total_token_count or 0}"
-    )
-
-
-def get_backoff_seconds(attempt: int) -> float:
-    base = float(os.getenv("RATE_LIMIT_BASE_DELAY", "60"))
-    max_delay = float(os.getenv("RATE_LIMIT_MAX_DELAY", "300"))
-    exp = min(max_delay, base * (2 ** (attempt - 1)))
-    jitter = random.uniform(0, base * 0.1)
-    return exp + jitter
-
-
-async def run_with_retry(agent: ChatAgent, *args, max_retries: int = 5, **kwargs):
-    for attempt in range(1, max_retries + 1):
-        try:
-            response = await agent.run(*args, **kwargs)
-            if os.getenv("STREAM_TOKENS", "1") == "1" and response.usage_details:
-                print(f"Tokens: {format_usage(response.usage_details)}")
-            return response
-        except RateLimitError as exc:
-            if attempt == max_retries:
-                raise
-            wait_seconds = get_backoff_seconds(attempt)
-            print(f"Rate limit hit. Retrying in {wait_seconds:.1f}s (attempt {attempt}/{max_retries})")
-            await asyncio.sleep(wait_seconds)
-
-
-async def run_with_stream(agent: ChatAgent, messages: str, *, max_retries: int = 5) -> AgentRunResponse:
-    for attempt in range(1, max_retries + 1):
-        try:
-            response_updates = []
-            async for update in agent.run_stream(messages):
-                if update.text:
-                    print(update.text, end="", flush=True)
-                if os.getenv("STREAM_TOKENS", "1") == "1":
-                    usage_chunks = [c for c in update.contents if isinstance(c, UsageContent)]
-                    for usage_content in usage_chunks:
-                        print(f"\nTokens: {format_usage(usage_content.details)}")
-                response_updates.append(update)
-            print()
-            response = AgentRunResponse.from_agent_run_response_updates(response_updates)
-            if os.getenv("STREAM_TOKENS", "1") == "1" and response.usage_details:
-                print(f"Tokens: {format_usage(response.usage_details)}")
-            return response
-        except RateLimitError:
-            if attempt == max_retries:
-                raise
-            wait_seconds = get_backoff_seconds(attempt)
-            print(f"\nRate limit hit. Retrying in {wait_seconds:.1f}s (attempt {attempt}/{max_retries})")
-            await asyncio.sleep(wait_seconds)
 
 
 
@@ -203,7 +173,7 @@ async def agent1() -> None:
         plus a final f-string containing `result.text`, producing one combined prompt string.
     """
     load_dotenv()
-    print("Hello from agentframework!")
+    logger.info("Starting agent1 demo - Hello from agentframework!")
     prompt_path = Path(
         os.getenv(
             "PROMPT_TEMPLATE_PATH",
@@ -480,70 +450,7 @@ async def kaito_ragengine_bge_small_agent(
     return agent
 
 
-async def fitness_agent(image_path: str | None = None) -> None:
-    """
-    Estimate macronutrients for a food image.
-    Notes:
-    - Requires a vision-capable model deployment.
-    - The model will provide estimates; verify with nutrition labels when possible.
-    """
-    load_dotenv()
-    image_path = image_path or (sys.argv[1] if len(sys.argv) > 1 else prompt("Image path: "))
-    if not image_path:
-        print("No image file path provided.")
-        return
 
-    image_file = Path(image_path)
-    if not image_file.exists():
-        print(f"Image not found: {image_file}")
-        return
-
-    mime_type, _ = mimetypes.guess_type(image_file.name)
-    mime_type = mime_type or "application/octet-stream"
-    image_bytes = image_file.read_bytes()
-
-    instructions = (
-        "You are a fitness nutrition assistant. Use the provided food image to estimate "
-        "macronutrients. Provide best-effort estimates with clear uncertainty."
-    )
-
-    chat_client = AzureOpenAIChatClient(credential=AzureCliCredential())
-    agent = ChatAgent(
-        chat_client=chat_client,
-        instructions=instructions,
-        name="fitness_agent",
-        model=Settings().azure_openai_chat_deployment,
-        tools=[],
-        max_completion_tokens=800,
-        temperature=1.0,
-    )
-
-    # Build a multipart ChatMessage with text + image content parts.
-    # This sends the image as a proper vision content block (image_url)
-    # instead of embedding the base64 string in the text prompt.
-    prompt_text = (
-        "Estimate macronutrients for the food in this image. "
-        "Return estimates in grams for protein, carbs, fat, and calories. "
-        "Include a confidence level (low/medium/high) and short notes."
-    )
-    message = ChatMessage(
-        role="user",
-        contents=[
-            TextContent(text=prompt_text),
-            DataContent(data=image_bytes, media_type=mime_type),
-        ],
-    )
-
-    try:
-        result = await run_with_retry(agent, message, response_format=MacroNutrients)
-        print("Macronutrient estimates:\n", result)
-        if result.usage_details:
-            print(f"Image request tokens: {format_usage(result.usage_details)}")
-    except RateLimitError:
-        print(
-            "Rate limit reached. Please wait ~60 seconds and retry. "
-            "Consider lowering request frequency or requesting a quota increase."
-        )
     
 
 if __name__ == "__main__":

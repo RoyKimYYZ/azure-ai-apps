@@ -2,12 +2,14 @@ import asyncio
 
 import click
 
-from main import agent1, fitness_agent
+from main import agent1, configure_logging
+from fitness_agent import fitness_agent
 
 
 @click.group()
 def cli() -> None:
     """AgentFramework CLI."""
+    configure_logging()
 
 
 @cli.command(name="agent1")

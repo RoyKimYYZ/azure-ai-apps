@@ -50,14 +50,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agent_framework import ChatAgent, ChatMessage
 from ai_chat_client import KaitoChatClient
-from main import (
-    agent1,
-    azure_foundry_general_agent,
-    fitness_agent,
-    load_prompt_template,
-    render_instructions,
-    run_with_retry,
-)
+from fitness_agent import fitness_agent
+from main import agent1, azure_foundry_general_agent, load_prompt_template, render_instructions
+from run_utils import run_with_retry
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
 

@@ -109,7 +109,7 @@ uv run streamlit run chatbot/chatbot.py
 
 # CLI agents
 uv run python cli.py agent1
-uv run python cli.py fitness food-images/sample.jpg
+uv run python cli.py fitness food-images/beef-egg-wrap.jpg
 ```
 
 ### 4. Build and Push Docker Image
