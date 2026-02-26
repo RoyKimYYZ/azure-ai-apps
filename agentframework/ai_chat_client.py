@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
 from collections.abc import AsyncIterable
+from urllib.parse import urlparse
 
 from agent_framework import (
     ChatMessage,
@@ -23,10 +25,14 @@ from agent_framework._clients import BaseChatClient
 
 
 def _normalize_endpoint(endpoint: str) -> str:
-    endpoint = endpoint.rstrip("/")
+    endpoint = endpoint.strip().strip('"').strip("'").rstrip("/")
     if endpoint.endswith("/v1/chat/completions"):
         return endpoint
     return f"{endpoint}/v1/chat/completions"
+
+
+def _is_running_in_kubernetes() -> bool:
+    return bool(os.getenv("KUBERNETES_SERVICE_HOST"))
 
 
 @dataclass(frozen=True)
@@ -65,10 +71,23 @@ class AIChatclient:
         endpoint = endpoint or os.getenv("KAITO_INFERENCE_ENDPOINT", "")
         if not endpoint:
             raise ValueError("KAITO inference endpoint is required.")
+        normalized_endpoint = _normalize_endpoint(endpoint)
+        parsed = urlparse(normalized_endpoint)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError(
+                "Invalid KAITO endpoint. Use a full URL like http://host:port or https://host. "
+                f"Received: {endpoint}"
+            )
+        if parsed.hostname.endswith(".svc.cluster.local") and not _is_running_in_kubernetes():
+            raise ValueError(
+                "KAITO endpoint appears to be an in-cluster Kubernetes DNS name and is not resolvable from this runtime. "
+                "Use kubectl port-forward and set KAITO_INFERENCE_ENDPOINT to a localhost URL, "
+                "for example http://127.0.0.1:8000/v1/chat/completions."
+            )
         api_key = api_key or os.getenv("KAITO_API_KEY")
         default_model = default_model or os.getenv("KAITO_MODEL")
         self._config = AIChatclientConfig(
-            endpoint=_normalize_endpoint(endpoint),
+            endpoint=normalized_endpoint,
             api_key=api_key,
             api_key_header=api_key_header,
             api_key_prefix=api_key_prefix,
@@ -140,7 +159,21 @@ class AIChatclient:
                 f"KAITO chat request failed: {exc.code} {exc.reason} - {error_body}"
             ) from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError(f"KAITO chat request failed: {exc.reason}") from exc
+            parsed_endpoint = urlparse(self._config.endpoint)
+            host = parsed_endpoint.hostname or "<unknown-host>"
+            reason = exc.reason
+            if isinstance(reason, socket.gaierror) and reason.errno == -2:
+                if host.endswith(".svc.cluster.local") and not _is_running_in_kubernetes():
+                    raise RuntimeError(
+                        "KAITO chat request failed: endpoint host is not resolvable from this runtime. "
+                        "This is a Kubernetes cluster-local DNS name. Use kubectl port-forward and call a localhost endpoint, "
+                        "for example http://127.0.0.1:8000/v1/chat/completions."
+                    ) from exc
+                raise RuntimeError(
+                    f"KAITO chat request failed: DNS lookup failed for host '{host}'. "
+                    "Check KAITO_INFERENCE_ENDPOINT and network/DNS settings."
+                ) from exc
+            raise RuntimeError(f"KAITO chat request failed: {reason}") from exc
 
 
 class KaitoChatClient(BaseChatClient):

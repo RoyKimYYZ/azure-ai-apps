@@ -5,7 +5,7 @@ providers:
   - name: AI Foundry
     endpoint_env: AI_FOUNDRY_ENDPOINT
     api_key_env: AI_FOUNDRY_API_KEY
-    models_env: [gpt-5.2-chat, DeepSeek-V3.2]
+    models_env: [gpt-5.2-chat, DeepSeek-V3.2, gpt-5-mini]
     model_env: AI_FOUNDRY_MODEL
     default_model: gpt-5.2-chat
 

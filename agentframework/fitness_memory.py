@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 from dataclasses import dataclass
@@ -12,6 +13,10 @@ from uuid import uuid4
 
 from agent_framework import ChatMessage, Context, ContextProvider
 from pydantic import BaseModel, Field, model_validator
+
+
+logger = logging.getLogger(__name__)
+_SKIP_UPDATE = object()
 
 
 def utc_now_iso() -> str:
@@ -253,18 +258,104 @@ class SQLiteFitnessMemoryRepository:
             (user_id, user_id, utc_now_iso(), utc_now_iso()),
         )
 
-    def _apply_profile_updates(self, conn: sqlite3.Connection, user_id: str, updates: list[ProfileUpdate]) -> None:
+    def _apply_profile_updates(self, conn: sqlite3.Connection, user_id: str, updates: list[ProfileUpdate]) -> dict[str, Any]:
+        diagnostics: dict[str, Any] = {
+            "input_count": len(updates),
+            "applied_count": 0,
+            "skipped_count": 0,
+            "applied_fields": [],
+            "normalized_fields": [],
+            "skipped_fields": [],
+        }
         if not updates:
-            return
+            return diagnostics
+
+        normalized_updates: list[tuple[str, Any, Any]] = []
+        for update in updates:
+            normalized = self._normalize_profile_update_value(update.field, update.value)
+            if normalized is _SKIP_UPDATE:
+                diagnostics["skipped_count"] += 1
+                diagnostics["skipped_fields"].append(update.field)
+                continue
+            normalized_updates.append((update.field, normalized, update.value))
+
+        if not normalized_updates:
+            return diagnostics
+
         assignments: list[str] = []
         values: list[Any] = []
-        for update in updates:
-            assignments.append(f"{update.field} = ?")
-            values.append(update.value)
+        for field, value, original_value in normalized_updates:
+            assignments.append(f"{field} = ?")
+            values.append(value)
+            diagnostics["applied_fields"].append(field)
+            if value != original_value:
+                diagnostics["normalized_fields"].append(field)
         assignments.append("updated_at = ?")
         values.append(utc_now_iso())
         values.append(user_id)
         conn.execute(f"UPDATE users SET {', '.join(assignments)} WHERE user_id = ?", values)
+        diagnostics["applied_count"] = len(normalized_updates)
+        return diagnostics
+
+    @staticmethod
+    def _normalize_profile_update_value(field: str, value: Any) -> Any:
+        if field == "birthday_mmddyyyy":
+            return SQLiteFitnessMemoryRepository._normalize_birthday(value)
+
+        if field == "height_value":
+            if value in (None, ""):
+                return None
+            try:
+                height_value = float(value)
+            except (TypeError, ValueError):
+                logger.warning("Skipping invalid height_value update: %r", value)
+                return _SKIP_UPDATE
+            if height_value <= 0:
+                logger.warning("Skipping non-positive height_value update: %r", value)
+                return _SKIP_UPDATE
+            return height_value
+
+        if field == "name":
+            if value is None:
+                logger.warning("Skipping null name update to preserve NOT NULL constraint")
+                return _SKIP_UPDATE
+            text = str(value).strip()
+            if not text:
+                logger.warning("Skipping empty name update to preserve NOT NULL constraint")
+                return _SKIP_UPDATE
+            return text
+
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @staticmethod
+    def _normalize_birthday(value: Any) -> Any:
+        if value in (None, ""):
+            return None
+
+        text = str(value).strip()
+        parse_formats = [
+            "%m/%d/%Y",
+            "%m-%d-%Y",
+            "%Y-%m-%d",
+            "%Y/%m/%d",
+            "%m%d%Y",
+            "%B %d, %Y",
+            "%b %d, %Y",
+            "%d %B %Y",
+            "%d %b %Y",
+        ]
+
+        for fmt in parse_formats:
+            try:
+                parsed = datetime.strptime(text, fmt)
+                return parsed.strftime("%m/%d/%Y")
+            except ValueError:
+                continue
+
+        logger.warning("Skipping invalid birthday_mmddyyyy update (unrecognized format): %r", value)
+        return _SKIP_UPDATE
 
     def _insert_body_metrics(self, conn: sqlite3.Connection, user_id: str, events: list[BodyMetricEventInsert]) -> int:
         created = 0
@@ -500,7 +591,7 @@ class SQLiteFitnessMemoryRepository:
     ) -> dict[str, Any]:
         with self._conn() as conn:
             self._ensure_user(conn, user_id)
-            self._apply_profile_updates(conn, user_id, payload.profile_updates)
+            profile_debug = self._apply_profile_updates(conn, user_id, payload.profile_updates)
             body_metric_count = self._insert_body_metrics(conn, user_id, payload.body_metric_events_insert)
             meal_event_id = self._upsert_meal_event(
                 conn,
@@ -516,6 +607,7 @@ class SQLiteFitnessMemoryRepository:
             "body_metric_count": body_metric_count,
             "profile_update_count": len(payload.profile_updates),
             "meal_items_detected": len(payload.meal_items_upsert),
+            "profile_debug": profile_debug,
         }
 
     def apply_text_turn_submission(
@@ -528,13 +620,14 @@ class SQLiteFitnessMemoryRepository:
     ) -> dict[str, Any]:
         with self._conn() as conn:
             self._ensure_user(conn, user_id)
-            self._apply_profile_updates(conn, user_id, payload.profile_updates)
+            profile_debug = self._apply_profile_updates(conn, user_id, payload.profile_updates)
             body_metric_count = self._insert_body_metrics(conn, user_id, payload.body_metric_events_insert)
         return {
             "idempotency_key": idempotency_key,
             "profile_update_count": len(payload.profile_updates),
             "body_metric_count": body_metric_count,
             "structured_output_keys": sorted(raw_structured_output.keys()),
+            "profile_debug": profile_debug,
         }
 
     def load_thread_state(self, *, user_id: str, session_key: str, agent_name: str) -> dict[str, Any] | None:

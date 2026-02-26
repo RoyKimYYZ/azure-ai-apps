@@ -1,14 +1,22 @@
 import asyncio
+import hashlib
+import html
 import io
 import json
 import logging
+import mimetypes
 import os
+import re
+import sqlite3
 import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from contextlib import redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 import yaml
@@ -48,9 +56,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from agent_framework import ChatAgent, ChatMessage
+from agent_framework import ChatAgent, ChatMessage, DataContent, TextContent
+from agent_framework.azure import AzureOpenAIChatClient
+from azure.identity import AzureCliCredential
 from ai_chat_client import KaitoChatClient
-from fitness_agent import fitness_agent
+from fitness_memory import (
+    DatabaseContextProvider,
+    PhotoSubmissionStructuredOutput,
+    TextTurnStructuredOutput,
+    extract_idempotency_key,
+    get_fitness_repository,
+)
 from main import agent1, azure_foundry_general_agent, load_prompt_template, render_instructions
 from run_utils import run_with_retry
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
@@ -82,6 +98,18 @@ def _normalize_endpoint(endpoint: str) -> str:
     if endpoint.endswith("/v1/chat/completions"):
         return endpoint
     return f"{endpoint}/v1/chat/completions"
+
+
+def _is_running_in_kubernetes() -> bool:
+    return bool(os.getenv("KUBERNETES_SERVICE_HOST"))
+
+
+def _is_cluster_local_endpoint(endpoint: str | None) -> bool:
+    cleaned = _clean_env(endpoint)
+    if not cleaned:
+        return False
+    parsed = urlparse(cleaned)
+    return bool(parsed.hostname and parsed.hostname.endswith(".svc.cluster.local"))
 
 
 def _post_chat_completion(
@@ -302,9 +330,689 @@ def _build_kaito_ragengine_agent(model: str, index_name: str | None = None) -> C
     )
 
 
-st.set_page_config(page_title="AI Foundry Chatbot", page_icon="🤖", layout="centered")
+def _coerce_photo_payload(result: object) -> tuple[PhotoSubmissionStructuredOutput, dict]:
+    parsed = getattr(result, "parsed", None)
+    if isinstance(parsed, PhotoSubmissionStructuredOutput):
+        payload = parsed
+        raw = payload.model_dump()
+        return payload, raw
+    if isinstance(parsed, dict):
+        payload = PhotoSubmissionStructuredOutput.model_validate(parsed)
+        return payload, parsed
+    text = getattr(result, "text", "")
+    if isinstance(text, str):
+        loaded = json.loads(text)
+        payload = PhotoSubmissionStructuredOutput.model_validate(loaded)
+        return payload, loaded
+    raise ValueError("Unable to parse structured photo submission output.")
+
+
+def _coerce_text_turn_payload(result: object) -> tuple[TextTurnStructuredOutput, dict]:
+    parsed = getattr(result, "parsed", None)
+    if isinstance(parsed, TextTurnStructuredOutput):
+        payload = parsed
+        raw = payload.model_dump()
+        return payload, raw
+    if isinstance(parsed, dict):
+        payload = TextTurnStructuredOutput.model_validate(parsed)
+        return payload, parsed
+    text = getattr(result, "text", "")
+    if isinstance(text, str):
+        loaded = json.loads(text)
+        payload = TextTurnStructuredOutput.model_validate(loaded)
+        return payload, loaded
+    raise ValueError("Unable to parse structured text turn output.")
+
+
+async def _persist_text_turn_memory(
+    *,
+    agent: ChatAgent,
+    repo: object,
+    user_id: str,
+    user_text: str,
+    assistant_text: str,
+) -> None:
+    extraction_prompt = (
+        "Extract durable memory updates from this conversation turn and return strict JSON only.\n"
+        "Conversation turn:\n"
+        f"USER: {user_text}\n"
+        f"ASSISTANT: {assistant_text}\n\n"
+        "Schema:\n"
+        "{\n"
+        '  "profile_updates": [{"field": "name|birthday_mmddyyyy|height_value|height_unit|city|country|sex|timezone|external_user_key", "value": "string|number|null"}],\n'
+        '  "body_metric_events_insert": [{"metric_type": "weight|waist|blood_pressure", "value_primary": 0.0, "value_secondary": 0.0, "unit": "lbs|kg|in|cm|mmHg", "observed_at": "ISO-8601|null", "source": "manual|assistant|null", "confidence": 0.0, "notes": "string|null"}],\n'
+        '  "persistence_ops": [{"operation": "insert|update|upsert", "target": "users|body_metric_events", "idempotency_key": "string|null"}]\n'
+        "}\n"
+        "Rules: only include explicit facts from this turn; do not infer missing values; return empty arrays if nothing to store."
+    )
+
+    try:
+        result = await run_with_retry(
+            agent,
+            extraction_prompt,
+            response_format=TextTurnStructuredOutput,
+        )
+        payload, raw_output = _coerce_text_turn_payload(result)
+        if not payload.profile_updates and not payload.body_metric_events_insert:
+            _append_memory_debug_event("text_persist", "no explicit profile/body metric facts extracted")
+            return
+
+        idempotency_key = hashlib.sha256(
+            f"{user_id}:{user_text}:{assistant_text}".encode("utf-8")
+        ).hexdigest()
+        persist_result = repo.apply_text_turn_submission(
+            user_id=user_id,
+            payload=payload,
+            raw_structured_output=raw_output,
+            idempotency_key=idempotency_key,
+        )
+        logger.info("Text-turn memory persisted: %s", persist_result)
+        profile_debug = persist_result.get("profile_debug", {}) if isinstance(persist_result, dict) else {}
+        applied_fields = profile_debug.get("applied_fields", []) if isinstance(profile_debug, dict) else []
+        normalized_fields = profile_debug.get("normalized_fields", []) if isinstance(profile_debug, dict) else []
+        skipped_fields = profile_debug.get("skipped_fields", []) if isinstance(profile_debug, dict) else []
+        _append_memory_debug_event(
+            "text_persist",
+            (
+                f"saved profile_updates={len(payload.profile_updates)} body_metrics={len(payload.body_metric_events_insert)} "
+                f"applied={applied_fields or ['none']} normalized={normalized_fields or ['none']} skipped={skipped_fields or ['none']}"
+            ),
+        )
+    except Exception as exc:
+        logger.warning("Could not persist text-turn memory: %s", exc)
+        _append_memory_debug_event("text_persist", f"failed: {exc}")
+
+
+async def _resolve_maybe_awaitable(value: object) -> object:
+    if hasattr(value, "__await__"):
+        return await value
+    return value
+
+
+def _normalize_user_id(user_name: str) -> str:
+    cleaned = (user_name or "").strip()
+    return cleaned if cleaned else "default-user"
+
+
+def _browser_timezone_name() -> str:
+    try:
+        context_tz = getattr(getattr(st, "context", None), "timezone", None)
+        if isinstance(context_tz, str) and context_tz.strip():
+            return context_tz.strip()
+    except Exception:
+        pass
+    return "UTC"
+
+
+def _short_local_datetime(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        normalized = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        tz = ZoneInfo(_browser_timezone_name())
+        return dt.astimezone(tz).strftime("%m/%d/%Y %I:%M %p")
+    except Exception:
+        return str(value)
+
+
+def _resolve_memory_user_id(user_name: str) -> tuple[str, bool]:
+    normalized = _normalize_user_id(user_name)
+    db_path = _fitness_db_path()
+    if not db_path.exists():
+        return normalized, False
+
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            by_id = conn.execute(
+                "SELECT user_id FROM users WHERE lower(user_id) = lower(?) LIMIT 1",
+                (normalized,),
+            ).fetchone()
+            if by_id:
+                return str(by_id["user_id"]), False
+
+            by_name = conn.execute(
+                "SELECT user_id FROM users WHERE lower(name) = lower(?) ORDER BY updated_at DESC LIMIT 1",
+                (normalized,),
+            ).fetchone()
+            if by_name:
+                return str(by_name["user_id"]), True
+    except Exception:
+        logger.exception("Could not resolve memory user id by name")
+
+    return normalized, False
+
+
+def _sum_structured_macros(meal: dict) -> dict[str, float | None]:
+    raw = meal.get("llm_structured_output_json")
+    if not raw:
+        return {"calories_kcal": None, "protein_g": None, "carbs_g": None, "fat_g": None}
+    try:
+        loaded = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return {"calories_kcal": None, "protein_g": None, "carbs_g": None, "fat_g": None}
+
+    events = loaded.get("macro_events_insert") if isinstance(loaded, dict) else None
+    if not isinstance(events, list) or not events:
+        return {"calories_kcal": None, "protein_g": None, "carbs_g": None, "fat_g": None}
+
+    def _sum_field(field: str) -> float | None:
+        vals = []
+        for event in events:
+            if isinstance(event, dict) and event.get(field) is not None:
+                try:
+                    vals.append(float(event.get(field)))
+                except Exception:
+                    pass
+        if not vals:
+            return None
+        return round(sum(vals), 2)
+
+    return {
+        "calories_kcal": _sum_field("calories_kcal"),
+        "protein_g": _sum_field("protein_g"),
+        "carbs_g": _sum_field("carbs_g"),
+        "fat_g": _sum_field("fat_g"),
+    }
+
+
+def _estimate_macros_from_labels(labels: list[str]) -> dict[str, float | None]:
+    if not labels:
+        return {"calories_kcal": None, "protein_g": None, "carbs_g": None, "fat_g": None}
+
+    per_item_defaults = {
+        "pizza dough": (280.0, 9.0, 56.0, 3.0),
+        "tomato sauce": (40.0, 2.0, 8.0, 0.0),
+        "mozzarella": (170.0, 12.0, 3.0, 12.0),
+        "basil": (2.0, 0.2, 0.3, 0.0),
+        "olive oil": (119.0, 0.0, 0.0, 14.0),
+        "salmon": (233.0, 25.0, 0.0, 14.0),
+        "romaine": (15.0, 1.0, 3.0, 0.0),
+        "kimchi": (23.0, 1.0, 4.0, 0.0),
+        "flour tortilla": (220.0, 6.0, 36.0, 5.0),
+        "egg": (182.0, 12.0, 2.0, 14.0),
+        "beef": (250.0, 26.0, 0.0, 15.0),
+        "tomato": (22.0, 1.0, 5.0, 0.0),
+        "lettuce": (15.0, 1.0, 3.0, 0.0),
+        "cheese": (160.0, 10.0, 2.0, 12.0),
+        "chicken": (240.0, 27.0, 0.0, 14.0),
+        "rice": (205.0, 4.0, 45.0, 0.4),
+        "noodle": (220.0, 7.0, 40.0, 3.0),
+    }
+    unknown_default = (120.0, 6.0, 12.0, 4.0)
+
+    total_kcal = 0.0
+    total_protein = 0.0
+    total_carbs = 0.0
+    total_fat = 0.0
+
+    for label in labels:
+        key = (label or "").strip().lower()
+        matched = None
+        for token, macro in per_item_defaults.items():
+            if token in key:
+                matched = macro
+                break
+        kcal, protein, carbs, fat = matched or unknown_default
+        total_kcal += kcal
+        total_protein += protein
+        total_carbs += carbs
+        total_fat += fat
+
+    return {
+        "calories_kcal": round(total_kcal, 2),
+        "protein_g": round(total_protein, 2),
+        "carbs_g": round(total_carbs, 2),
+        "fat_g": round(total_fat, 2),
+    }
+
+
+def _display_meal_macros(meal: dict) -> tuple[str, str, str, str]:
+    kcal = meal.get("calories_kcal")
+    protein = meal.get("protein_g")
+    carbs = meal.get("carbs_g")
+    fat = meal.get("fat_g")
+
+    if all(v in (None, 0, 0.0, "") for v in [kcal, protein, carbs, fat]):
+        derived = _sum_structured_macros(meal)
+        kcal = derived.get("calories_kcal")
+        protein = derived.get("protein_g")
+        carbs = derived.get("carbs_g")
+        fat = derived.get("fat_g")
+
+    if all(v in (None, 0, 0.0, "") for v in [kcal, protein, carbs, fat]):
+        labels = _extract_detected_food_labels(meal)
+        estimated = _estimate_macros_from_labels(labels)
+        kcal = estimated.get("calories_kcal")
+        protein = estimated.get("protein_g")
+        carbs = estimated.get("carbs_g")
+        fat = estimated.get("fat_g")
+
+    def _fmt(value: float | int | str | None, suffix: str = "") -> str:
+        if value is None or value == "":
+            return "n/a"
+        return f"{value}{suffix}"
+
+    return _fmt(kcal), _fmt(protein, "g"), _fmt(carbs, "g"), _fmt(fat, "g")
+
+
+def _extract_detected_food_labels(meal: dict) -> list[str]:
+    raw = meal.get("llm_structured_output_json")
+    if not raw:
+        return []
+    try:
+        loaded = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return []
+    if not isinstance(loaded, dict):
+        return []
+    items = loaded.get("meal_items_upsert")
+    if not isinstance(items, list):
+        return []
+    labels: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            label = str(item.get("food_label") or "").strip()
+            if label:
+                labels.append(label)
+    return labels
+
+def _meal_short_description(meal: dict) -> str:
+    labels = _extract_detected_food_labels(meal)
+    if labels:
+        snippet = ", ".join(labels[:3])
+        if len(labels) > 3:
+            snippet = f"{snippet}, and more"
+        return f"Detected meal: {snippet}."
+
+    raw = meal.get("llm_structured_output_json")
+    if raw:
+        try:
+            loaded = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(loaded, dict):
+                meal_upsert = loaded.get("meal_upsert")
+                if isinstance(meal_upsert, dict):
+                    notes = str(meal_upsert.get("notes") or "").strip()
+                    if notes:
+                        return notes
+        except Exception:
+            pass
+    return "Meal photo logged."
+
+
+def _ensure_macro_events_in_output(raw_output: dict) -> dict:
+    if not isinstance(raw_output, dict):
+        return raw_output
+    events = raw_output.get("macro_events_insert")
+    if isinstance(events, list) and len(events) > 0:
+        return raw_output
+    items = raw_output.get("meal_items_upsert")
+    if not isinstance(items, list) or not items:
+        return raw_output
+    labels = []
+    for item in items:
+        if isinstance(item, dict):
+            label = str(item.get("food_label") or "").strip()
+            if label:
+                labels.append(label)
+    estimated = _estimate_macros_from_labels(labels)
+    if estimated.get("calories_kcal") is None:
+        return raw_output
+
+    raw_output["macro_events_insert"] = [
+        {
+            "calories_kcal": estimated.get("calories_kcal"),
+            "protein_g": estimated.get("protein_g"),
+            "carbs_g": estimated.get("carbs_g"),
+            "fat_g": estimated.get("fat_g"),
+            "fiber_g": None,
+            "sugar_g": None,
+            "sodium_mg": None,
+            "confidence": 0.3,
+            "model_name": "heuristic-food-label-estimator",
+            "model_version": "1",
+            "prompt_version": "fallback-v1",
+            "notes": "Estimated from detected food labels because model returned no macro_events_insert.",
+        }
+    ]
+    return raw_output
+
+
+def _parse_birthday_mmddyyyy(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    for fmt in ("%m%d%Y", "%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _age_from_birthday(value: str | None) -> int | None:
+    dob = _parse_birthday_mmddyyyy(value)
+    if dob is None:
+        return None
+    now_local = datetime.now(ZoneInfo(_browser_timezone_name()))
+    years = now_local.year - dob.year
+    if (now_local.month, now_local.day) < (dob.month, dob.day):
+        years -= 1
+    return max(years, 0)
+
+
+def _latest_metric(metrics: list[dict], metric_type: str) -> dict | None:
+    for item in metrics:
+        if item.get("metric_type") == metric_type:
+            return item
+    return None
+
+
+def _pretty_profile_key(key: str) -> str:
+    return key.replace("_", " ").strip().title()
+
+
+def _append_memory_debug_event(event: str, details: str) -> None:
+    try:
+        logs = st.session_state.setdefault("memory_debug_events", [])
+        stamp = datetime.now(ZoneInfo(_browser_timezone_name())).strftime("%m/%d/%Y %I:%M:%S %p")
+        logs.append(f"[{stamp}] {event}: {details}")
+        if len(logs) > 400:
+            del logs[:-400]
+    except Exception:
+        pass
+
+
+def _estimate_tokens_from_text(text: str) -> int:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return 0
+    return max(1, len(cleaned) // 4)
+
+
+def _estimate_tokens_from_chat_messages(messages: list[ChatMessage]) -> int:
+    total = 0
+    for message in messages:
+        total += _estimate_tokens_from_text(getattr(message, "text", "") or "")
+        total += 8
+    return total
+
+
+def _parse_usage_summary(usage_summary: str) -> dict[str, int]:
+    parsed = {"input": 0, "output": 0, "total": 0}
+    for token in (usage_summary or "").split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        if key in parsed:
+            try:
+                parsed[key] = int(value)
+            except ValueError:
+                parsed[key] = 0
+    return parsed
+
+
+def _format_metrics_entry(entry: str) -> str:
+    latency_match = re.search(r"latency_s=([0-9]+(?:\.[0-9]+)?)", entry)
+    if not latency_match:
+        return entry
+    try:
+        latency = float(latency_match.group(1))
+    except ValueError:
+        return entry
+    if latency >= 20:
+        return f"🟥 slow {entry}"
+    if latency >= 10:
+        return f"🟨 elevated {entry}"
+    return f"🟩 ok {entry}"
+
+
+def _render_longterm_meal_block(meal: dict) -> str:
+    meal_title = meal.get("meal_type") or "meal"
+    meal_time = _short_local_datetime(meal.get("occurred_at"))
+    description = _meal_short_description(meal)
+    kcal, protein, carbs, fat = _display_meal_macros(meal)
+
+    lines = [
+        f"<div class='meal-title'>{html.escape(str(meal_title))} {html.escape(str(meal_time))}</div>",
+        f"<div class='meal-line'>{html.escape(str(description))}</div>",
+        f"<div class='meal-line'>kcal={html.escape(str(kcal))} | protein={html.escape(str(protein))} | carbs={html.escape(str(carbs))} | fat={html.escape(str(fat))}</div>",
+    ]
+
+    if kcal == "n/a" and protein == "n/a" and carbs == "n/a" and fat == "n/a":
+        labels = _extract_detected_food_labels(meal)
+        if not labels:
+            lines.append("<div class='meal-line'>No detected foods in structured output.</div>")
+
+    return f"<div class='longterm-meal'>{''.join(lines)}</div>"
+
+
+def _fitness_db_path() -> Path:
+    env_path = _clean_env(os.getenv("FITNESS_DB_PATH"))
+    if env_path:
+        return Path(env_path)
+    return PROJECT_ROOT / "agentframework.db"
+
+
+def _fitness_chat_model(selected_model: str | None) -> str:
+    return selected_model or _clean_env(os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "gpt-5.2-chat"))
+
+
+def _build_fitness_runtime(user_id: str, selected_model: str | None) -> tuple[ChatAgent, object, str, str]:
+    repo = get_fitness_repository(_fitness_db_path())
+    session_key = f"fitness:{user_id}"
+    agent_name = "fitness_agent"
+    instructions = (
+        "You are a fitness nutrition assistant with access to user profile, body metrics, and meal macro history. "
+        "When users ask about goals or trends, use tracked data first and ask clarifying questions if missing data."
+    )
+    chat_client = AzureOpenAIChatClient(credential=AzureCliCredential())
+    context_provider = DatabaseContextProvider(repo, user_id=user_id, meal_limit=6)
+    agent = ChatAgent(
+        chat_client=chat_client,
+        instructions=instructions,
+        name=agent_name,
+        model=_fitness_chat_model(selected_model),
+        context_providers=[context_provider],
+        tools=[],
+        max_completion_tokens=800,
+        temperature=1.0,
+    )
+    return agent, repo, session_key, agent_name
+
+
+async def _run_fitness_turn(
+    *,
+    user_prompt: str,
+    user_id: str,
+    selected_model: str | None,
+    image_bytes: bytes | None,
+    image_name: str | None,
+) -> tuple[str, str]:
+    agent, repo, session_key, agent_name = _build_fitness_runtime(user_id, selected_model)
+    _append_memory_debug_event(
+        "run_start",
+        f"user_id={user_id} session_key={session_key} model={_fitness_chat_model(selected_model)}",
+    )
+    saved_state = repo.load_thread_state(user_id=user_id, session_key=session_key, agent_name=agent_name)
+    if saved_state:
+        try:
+            thread = await _resolve_maybe_awaitable(agent.deserialize_thread(saved_state))
+            _append_memory_debug_event("thread_restore", "restored prior thread state")
+        except Exception:
+            thread = await _resolve_maybe_awaitable(agent.get_new_thread())
+            _append_memory_debug_event("thread_restore", "restore failed, created new thread")
+    else:
+        thread = await _resolve_maybe_awaitable(agent.get_new_thread())
+        _append_memory_debug_event("thread_restore", "no prior state, created new thread")
+
+    usage_summary = ""
+    if image_bytes is not None:
+        mime_type, _ = mimetypes.guess_type(image_name or "")
+        mime_type = mime_type or "application/octet-stream"
+        request_message = ChatMessage(
+            role="user",
+            contents=[
+                TextContent(text=user_prompt),
+                DataContent(data=image_bytes, media_type=mime_type),
+            ],
+        )
+        result = await run_with_retry(agent, request_message, thread=thread)
+        content = _extract_display_text(getattr(result, "text", None) or str(result))
+        usage = getattr(result, "usage_details", None)
+        if usage:
+            usage_summary = (
+                f"input={usage.input_token_count or 0} "
+                f"output={usage.output_token_count or 0} "
+                f"total={usage.total_token_count or 0}"
+            )
+
+        extraction_prompt = (
+            "Analyze this meal image and return a strict JSON object matching this schema exactly:\n"
+            "{\n"
+            '  "profile_updates": [{"field": "name|birthday_mmddyyyy|height_value|height_unit|city|country|sex|timezone|external_user_key", "value": "string|number|null"}],\n'
+            '  "meal_upsert": {"occurred_at": "ISO-8601|null", "meal_type": "breakfast|lunch|dinner|snack|other|null", "source_image_uri": "string|null", "source_hash": "string|null", "unit_system": "metric|imperial|null", "notes": "string|null"},\n'
+            '  "meal_items_upsert": [{"food_label": "string", "quantity_value": 0.0, "quantity_unit": "string|null", "confidence": 0.0, "notes": "string|null"}],\n'
+            '  "macro_events_insert": [{"calories_kcal": 0.0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0, "fiber_g": 0.0, "sugar_g": 0.0, "sodium_mg": 0.0, "confidence": 0.0, "model_name": "string|null", "model_version": "string|null", "prompt_version": "string|null", "notes": "string|null"}],\n'
+            '  "body_metric_events_insert": [{"metric_type": "weight|waist|blood_pressure", "value_primary": 0.0, "value_secondary": 0.0, "unit": "lbs|kg|in|cm|mmHg", "observed_at": "ISO-8601|null", "source": "photo|manual|assistant|null", "confidence": 0.0, "notes": "string|null"}],\n'
+            '  "persistence_ops": [{"operation": "insert|update|upsert", "target": "users|body_metric_events|meal_events", "idempotency_key": "string|null"}]\n'
+            "}\n"
+            "Rules:\n"
+            "- If a meal is visible, provide best-effort numeric macro estimates in macro_events_insert (do not leave it empty).\n"
+            "- Use conservative estimates with lower confidence when uncertain.\n"
+            "- Return empty arrays/nulls only when the image is not food, unreadable, or insufficient for estimation."
+        )
+        extraction_message = ChatMessage(
+            role="user",
+            contents=[
+                TextContent(text=extraction_prompt),
+                DataContent(data=image_bytes, media_type=mime_type),
+            ],
+        )
+        try:
+            extraction_result = await run_with_retry(
+                agent,
+                extraction_message,
+                response_format=PhotoSubmissionStructuredOutput,
+            )
+            payload, raw_output = _coerce_photo_payload(extraction_result)
+            raw_output = _ensure_macro_events_in_output(raw_output)
+            payload = PhotoSubmissionStructuredOutput.model_validate(raw_output)
+            file_hint = image_name or "uploaded-image"
+            idempotency_key = extract_idempotency_key(payload, image_bytes, user_id)
+            repo.apply_photo_submission(
+                user_id=user_id,
+                image_path=file_hint,
+                payload=payload,
+                raw_structured_output=raw_output,
+                idempotency_key=idempotency_key,
+            )
+            _append_memory_debug_event(
+                "photo_persist",
+                f"saved meal photo submission image={file_hint} profile_updates={len(payload.profile_updates)} body_metrics={len(payload.body_metric_events_insert)}",
+            )
+        except Exception:
+            logger.exception("Could not persist photo extraction memory")
+            _append_memory_debug_event("photo_persist", "failed to persist photo extraction")
+
+        await _persist_text_turn_memory(
+            agent=agent,
+            repo=repo,
+            user_id=user_id,
+            user_text=user_prompt,
+            assistant_text=content,
+        )
+    else:
+        result = await run_with_retry(agent, user_prompt, thread=thread)
+        content = _extract_display_text(getattr(result, "text", None) or str(result))
+        usage = getattr(result, "usage_details", None)
+        if usage:
+            usage_summary = (
+                f"input={usage.input_token_count or 0} "
+                f"output={usage.output_token_count or 0} "
+                f"total={usage.total_token_count or 0}"
+            )
+
+        await _persist_text_turn_memory(
+            agent=agent,
+            repo=repo,
+            user_id=user_id,
+            user_text=user_prompt,
+            assistant_text=content,
+        )
+
+    try:
+        resolved_thread = await _resolve_maybe_awaitable(thread)
+        serialized_thread = await resolved_thread.serialize()
+        repo.upsert_thread_state(
+            user_id=user_id,
+            session_key=session_key,
+            agent_name=agent_name,
+            session_state=serialized_thread,
+            summary_text=user_prompt,
+        )
+        _append_memory_debug_event("thread_save", "thread state persisted")
+    except Exception:
+        logger.exception("Could not save fitness thread state")
+        _append_memory_debug_event("thread_save", "failed to persist thread state")
+
+    _append_memory_debug_event("run_end", "fitness turn completed")
+
+    return content, usage_summary
+
+
+st.set_page_config(page_title="AI Foundry Chatbot", page_icon="🤖", layout="wide")
 
 st.title("AI Foundry Chatbot")
+
+st.markdown(
+        """
+<style>
+div[data-testid="stAppViewContainer"] div.block-container {
+    max-width: 98%;
+    padding-left: 1rem;
+    padding-right: 1rem;
+}
+
+div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:last-child {
+    position: sticky;
+    top: 0.75rem;
+    align-self: flex-start;
+    max-height: calc(100vh - 1.5rem);
+    overflow-y: auto;
+    padding-right: 0.25rem;
+}
+
+div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:last-child > div[data-testid="stVerticalBlock"] {
+    position: sticky;
+    top: 0.75rem;
+}
+
+.longterm-meal {
+    color: #ffffff !important;
+    font-size: 0.86rem;
+    line-height: 1.22;
+    margin: 0 0 0.65rem 0;
+    padding: 0.15rem 0;
+}
+
+.longterm-meal .meal-title {
+    color: #ffffff !important;
+    font-weight: 700;
+    margin: 0 0 0.2rem 0;
+}
+
+.longterm-meal .meal-line {
+    color: #ffffff !important;
+    margin: 0.15rem 0;
+}
+</style>
+        """,
+        unsafe_allow_html=True,
+)
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -333,10 +1041,16 @@ AGENT_OPTIONS = [agent.get("name") for agent in AGENTS if agent.get("name")] or 
     "Fitness Nutrition",
     "Agent1 Demo",
 ]
+uploaded_food_image = None
+uploaded_food_image_bytes = None
+uploaded_food_image_name = ""
+fitness_user_name = st.session_state.get("fitness_user_name", "roy")
+chat_input_key = "chat_prompt_input"
 
 with st.sidebar:
     st.header("Settings")
-    agent_choice = st.selectbox("Agent", AGENT_OPTIONS, index=0)
+    default_agent_index = AGENT_OPTIONS.index("Fitness Nutrition") if "Fitness Nutrition" in AGENT_OPTIONS else 0
+    agent_choice = st.selectbox("Agent", AGENT_OPTIONS, index=default_agent_index)
     agent_config = next((agent for agent in AGENTS if agent.get("name") == agent_choice), {})
     provider_name = agent_config.get("provider")
     provider_config = next((p for p in PROVIDERS if p.get("name") == provider_name), {})
@@ -393,12 +1107,16 @@ with st.sidebar:
     if debug_enabled:
         _ensure_debug_log_handler()
 
-    fitness_image_path = ""
-    if agent_choice == "Fitness Nutrition":
-        fitness_image_path = st.text_input("Image path", "", help="Path to a local image for nutrition estimate")
-
     if st.button("New chat"):
         st.session_state.messages = []
+
+    if agent_choice in {"Kaito Assistant", "KAITO RAG Assistant"} and _is_cluster_local_endpoint(endpoint):
+        if not _is_running_in_kubernetes():
+            st.warning(
+                "This endpoint uses Kubernetes cluster-local DNS (*.svc.cluster.local) and is not reachable from this runtime. "
+                "Use `kubectl port-forward` and set Endpoint to a localhost URL such as "
+                "`http://127.0.0.1:8000/v1/chat/completions`."
+            )
 
     st.divider()
     st.subheader("Completion metrics")
@@ -406,149 +1124,459 @@ with st.sidebar:
     with metrics_container:
         if st.session_state.metrics_log:
             for entry in reversed(st.session_state.metrics_log[-50:]):
-                st.caption(entry)
+                st.caption(_format_metrics_entry(entry))
         else:
             st.caption("No completions yet.")
 
-for idx, message in enumerate(st.session_state.messages):
-    with st.chat_message(message["role"]):
-        if debug_enabled and message.get("role") == "assistant":
-            tabs = st.tabs(["Response", "Debug Logs"])
-            with tabs[0]:
-                st.markdown(message["content"])
-            with tabs[1]:
-                debug_text = "\n".join(message.get("debug_logs", []))
+if agent_choice == "Fitness Nutrition":
+    chat_col, right_col = st.columns([3.2, 1.2], gap="large")
+else:
+    chat_col, right_col = st.container(), None
+
+if right_col is not None:
+    with right_col:
+        st.subheader("Fitness Context")
+        fitness_user_name_input = st.text_input(
+            "User name",
+            value=fitness_user_name,
+            key="fitness_user_name",
+            help="Used as the user context key for long-term memory retrieval.",
+        )
+        memory_user_id, resolved_from_name = _resolve_memory_user_id(fitness_user_name_input)
+        if resolved_from_name:
+            st.caption(f"Retrieving profile for user: {fitness_user_name_input} (matched user_id: {memory_user_id})")
+        else:
+            st.caption(f"Retrieving profile for user: {memory_user_id}")
+
+        profile = {}
+        recent_body_metrics = []
+        meals = []
+        memory_error = None
+        try:
+            memory_repo = get_fitness_repository(_fitness_db_path())
+            read_model = memory_repo.get_read_model(memory_user_id, meal_limit=6)
+            profile = read_model.get("profile", {}) or {}
+            recent_body_metrics = read_model.get("recent_body_metrics", []) or []
+            meals = read_model.get("recent_meals", []) or []
+        except Exception as exc:
+            logger.exception("Could not load fitness memory panel")
+            memory_error = str(exc)
+
+        st.markdown("**User Profile**")
+        if memory_error:
+            st.caption(f"Could not load profile: {memory_error}")
+        elif profile:
+            profile_lines = []
+            ordered_user_fields = [
+                "name",
+                "birthday_mmddyyyy",
+                "height_value",
+                "height_unit",
+                "sex",
+                "city",
+                "country",
+                "timezone",
+                "external_user_key",
+            ]
+
+            def _display_or_na(value: object) -> str:
+                if value is None:
+                    return "n/a"
+                text = str(value).strip()
+                return text if text else "n/a"
+
+            birthday = profile.get("birthday_mmddyyyy")
+            age = _age_from_birthday(birthday)
+
+            for key in ordered_user_fields:
+                value = profile.get(key)
+                if key == "birthday_mmddyyyy":
+                    profile_lines.append(f"Birthday: {_display_or_na(value)}")
+                    continue
+                if key == "height_value":
+                    h_val = _display_or_na(profile.get("height_value"))
+                    h_unit = _display_or_na(profile.get("height_unit"))
+                    if h_val == "n/a" and h_unit == "n/a":
+                        profile_lines.append("Height: n/a")
+                    elif h_unit == "n/a":
+                        profile_lines.append(f"Height: {h_val}")
+                    else:
+                        profile_lines.append(f"Height: {h_val} {h_unit}")
+                    continue
+                if key == "height_unit":
+                    continue
+                profile_lines.append(f"{_pretty_profile_key(key)}: {_display_or_na(value)}")
+
+            profile_lines.append(f"Current Age: {age if age is not None else 'n/a'}")
+
+            latest_weight = _latest_metric(recent_body_metrics, "weight")
+            latest_waist = _latest_metric(recent_body_metrics, "waist")
+            latest_bp = _latest_metric(recent_body_metrics, "blood_pressure")
+
+            if latest_weight:
+                observed = _short_local_datetime(latest_weight.get("observed_at"))
+                profile_lines.append(
+                    f"Current Weight: {latest_weight.get('value_primary')} {latest_weight.get('unit')} ({observed})"
+                )
+            else:
+                profile_lines.append("Current Weight: n/a")
+            if latest_waist:
+                observed = _short_local_datetime(latest_waist.get("observed_at"))
+                profile_lines.append(
+                    f"Current Waist: {latest_waist.get('value_primary')} {latest_waist.get('unit')} ({observed})"
+                )
+            else:
+                profile_lines.append("Current Waist: n/a")
+            if latest_bp:
+                observed = _short_local_datetime(latest_bp.get("observed_at"))
+                profile_lines.append(
+                    f"Current Blood Pressure: {latest_bp.get('value_primary')}/{latest_bp.get('value_secondary')} {latest_bp.get('unit')} ({observed})"
+                )
+            else:
+                profile_lines.append("Current Blood Pressure: n/a")
+
+            if profile_lines:
+                st.text("\n".join(profile_lines))
+            else:
+                st.caption("No profile fields populated yet.")
+        else:
+            st.caption("No profile found for this user.")
+
+        st.divider()
+        uploaded_food_image = st.file_uploader(
+            "Upload food image (optional)",
+            type=["png", "jpg", "jpeg", "webp", "bmp"],
+            accept_multiple_files=False,
+            help="Attach an image; it will be included with your next chat message.",
+            key="fitness_food_upload",
+        )
+        if uploaded_food_image is not None:
+            uploaded_food_image_bytes = uploaded_food_image.getvalue()
+            uploaded_food_image_name = uploaded_food_image.name or "uploaded-food-image"
+            st.image(uploaded_food_image_bytes, caption=uploaded_food_image_name, use_container_width=True)
+            upload_marker = f"{uploaded_food_image_name}:{len(uploaded_food_image_bytes)}"
+            if st.session_state.get("fitness_last_upload_marker") != upload_marker:
+                st.session_state["fitness_last_upload_marker"] = upload_marker
+                st.session_state[chat_input_key] = "What are the macronutrients in this meal?"
+        else:
+            st.caption("No image attached.")
+
+        st.divider()
+        st.markdown("**Long-term memory (SQLite)**")
+        try:
+            if meals:
+                st.caption("Last 6 meals and macros")
+                for meal in meals[:6]:
+                    st.markdown(_render_longterm_meal_block(meal), unsafe_allow_html=True)
+            else:
+                st.caption("No meal history found.")
+        except Exception as exc:
+            logger.exception("Could not render meal memory panel")
+            st.caption(f"Could not render meals: {exc}")
+
+        st.divider()
+        st.markdown("**Short-term memory (chat)**")
+        short_memory = [
+            msg for msg in st.session_state.messages if msg.get("role") in {"user", "assistant"}
+        ][-6:]
+        if short_memory:
+            for msg in short_memory:
+                role = msg.get("role", "?")
+                text = (msg.get("content") or "").strip().replace("\n", " ")
+                st.caption(f"{role}: {text[:120]}{'...' if len(text) > 120 else ''}")
+        else:
+            st.caption("No short-term memory yet.")
+
+        st.divider()
+        with st.expander("Memory Debug", expanded=False):
+            debug_user_id = _normalize_user_id(st.session_state.get("fitness_user_name", "roy"))
+            debug_session_key = f"fitness:{debug_user_id}"
+            st.caption(f"db_path={_fitness_db_path()}")
+            st.caption(f"user_id={debug_user_id} | session_key={debug_session_key}")
+
+            short_all = [msg for msg in st.session_state.messages if msg.get("role") in {"user", "assistant"}]
+            user_turns = len([msg for msg in short_all if msg.get("role") == "user"])
+            assistant_turns = len([msg for msg in short_all if msg.get("role") == "assistant"])
+            st.caption(
+                f"short_term: total_turns={len(short_all)} user_turns={user_turns} assistant_turns={assistant_turns}"
+            )
+
+            longterm_summary = {
+                "profile_field_count": len(profile) if isinstance(profile, dict) else 0,
+                "body_metric_count": len(recent_body_metrics) if isinstance(recent_body_metrics, list) else 0,
+                "meal_count": len(meals) if isinstance(meals, list) else 0,
+            }
+            st.caption(
+                "long_term: "
+                f"profile_field_count={longterm_summary['profile_field_count']} "
+                f"body_metric_count={longterm_summary['body_metric_count']} "
+                f"meal_count={longterm_summary['meal_count']}"
+            )
+
+            st.markdown("**Long-term snapshot (read model)**")
+            try:
+                debug_read_model = {
+                    "profile": profile,
+                    "recent_body_metrics": recent_body_metrics,
+                    "recent_meals": meals,
+                }
                 st.text_area(
-                    "Log output",
-                    value=debug_text,
+                    "read_model_json",
+                    value=json.dumps(debug_read_model, indent=2, ensure_ascii=False),
                     height=220,
                     disabled=True,
-                    key=f"debug_logs_{idx}",
+                    key="memory_debug_read_model_json",
                 )
-        else:
-            st.markdown(message["content"])
+            except Exception as exc:
+                st.caption(f"Could not render read model JSON: {exc}")
 
-prompt = st.chat_input("Ask something...")
-if prompt:
-    logger.info("User prompt received. Agent=%s Endpoint=%s Model=%s", agent_choice, provider_name, model)
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    with st.chat_message("assistant"):
-        started = time.perf_counter()
-        status = "ok"
-        usage_summary = ""
-        try:
-            if agent_choice == "General Chat Assistant":
-                if endpoint:
-                    os.environ["AZURE_OPENAI_ENDPOINT"] = endpoint.strip().strip('"').strip("'")
-                    os.environ["AZURE_OPENAI_API_KEY"] = (api_key or "").strip().strip('"').strip("'")
-                if model:
-                    os.environ["CHAT_MODEL"] = model
-                    os.environ["AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"] = model
-
-            if agent_choice == "General Chat Assistant":
-                logger.info("Running General Chat Assistant agent")
-                agent = asyncio.run(azure_foundry_general_agent())
-                history_messages = [
-                    ChatMessage(role=msg.get("role", "user"), text=msg.get("content", ""))
-                    for msg in st.session_state.messages
-                ]
-                result = asyncio.run(run_with_retry(agent, history_messages))
-                content = _extract_display_text(getattr(result, "text", None) or str(result))
-                usage = getattr(result, "usage_details", None)
-                if usage:
-                    usage_summary = (
-                        f"input={usage.input_token_count or 0} "
-                        f"output={usage.output_token_count or 0} "
-                        f"total={usage.total_token_count or 0}"
-                    )
-            elif agent_choice == "Kaito Assistant":
-                logger.info("Running Kaito Assistant agent")
-                if endpoint:
-                    os.environ["KAITO_INFERENCE_ENDPOINT"] = endpoint
-                if api_key:
-                    os.environ["KAITO_API_KEY"] = api_key
-                if model:
-                    os.environ["KAITO_MODEL"] = model
-                agent = _build_kaito_agent(model)
-                result = asyncio.run(run_with_retry(agent, prompt))
-                content = _extract_display_text(getattr(result, "text", None) or str(result))
-                usage = getattr(result, "usage_details", None)
-                if usage:
-                    usage_summary = (
-                        f"input={usage.input_token_count or 0} "
-                        f"output={usage.output_token_count or 0} "
-                        f"total={usage.total_token_count or 0}"
-                    )
-            elif agent_choice == "KAITO RAG Assistant":
-                logger.info("Running KAITO RAG Assistant agent")
-                if endpoint:
-                    os.environ["KAITO_RAGENGINE_ENDPOINT"] = endpoint
-                if api_key:
-                    os.environ["KAITO_RAGENGINE_API_KEY"] = api_key
-                if model:
-                    os.environ["KAITO_MODEL"] = model
-                agent = _build_kaito_ragengine_agent(model)
-                result = asyncio.run(run_with_retry(agent, prompt))
-                content = _extract_display_text(getattr(result, "text", None) or str(result))
-                usage = getattr(result, "usage_details", None)
-                if usage:
-                    usage_summary = (
-                        f"input={usage.input_token_count or 0} "
-                        f"output={usage.output_token_count or 0} "
-                        f"total={usage.total_token_count or 0}"
-                    )
-            elif agent_choice == "Agent1 Demo":
-                logger.info("Running Agent1 Demo")
-                output = io.StringIO()
-                with redirect_stdout(output):
-                    asyncio.run(agent1())
-                raw_output = output.getvalue().strip()
-                content = _format_agent1_output(raw_output) or "No output from agent1."
+            st.markdown("**Operation Log**")
+            debug_events = st.session_state.get("memory_debug_events", [])
+            if debug_events:
+                st.text_area(
+                    "memory_events",
+                    value="\n".join(debug_events[-120:]),
+                    height=220,
+                    disabled=True,
+                    key="memory_debug_events_log",
+                )
             else:
-                logger.info("Running Fitness Nutrition agent")
-                if not fitness_image_path:
-                    st.warning("Provide an image path to run the fitness agent.")
-                    st.stop()
-                output = io.StringIO()
-                with redirect_stdout(output):
-                    asyncio.run(fitness_agent(fitness_image_path))
-                raw_output = output.getvalue().strip()
-                content = _extract_display_text(raw_output) or "No output from fitness agent."
+                st.caption("No memory operation events yet.")
 
-            st.markdown(content)
-            debug_snapshot = list(st.session_state.get("debug_logs", [])) if debug_enabled else []
-            st.session_state.messages.append(
-                {"role": "assistant", "content": content, "debug_logs": debug_snapshot}
+with chat_col:
+    for idx, message in enumerate(st.session_state.messages):
+        with st.chat_message(message["role"]):
+            if debug_enabled and message.get("role") == "assistant":
+                tabs = st.tabs(["Response", "Debug Logs"])
+                with tabs[0]:
+                    st.markdown(message["content"])
+                with tabs[1]:
+                    debug_text = "\n".join(message.get("debug_logs", []))
+                    st.text_area(
+                        "Log output",
+                        value=debug_text,
+                        height=220,
+                        disabled=True,
+                        key=f"debug_logs_{idx}",
+                    )
+            else:
+                st.markdown(message["content"])
+
+    prompt = st.chat_input("Ask something...", key=chat_input_key)
+    if prompt:
+        logger.info("User prompt received. Agent=%s Endpoint=%s Model=%s", agent_choice, provider_name, model)
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            started = time.perf_counter()
+            status = "ok"
+            usage_summary = ""
+            agent_init_elapsed = 0.0
+            model_call_elapsed = 0.0
+            turn_debug_logs: list[str] = []
+
+            def _add_turn_debug(line: str) -> None:
+                stamped = f"[{datetime.now(ZoneInfo(_browser_timezone_name())).strftime('%H:%M:%S')}] {line}"
+                turn_debug_logs.append(stamped)
+                logger.info("TURN_DEBUG %s", line)
+
+            _add_turn_debug(
+                f"request_start agent={agent_choice} provider={provider_name or '-'} model={model or '-'}"
             )
-        except urllib.error.HTTPError as exc:
-            status = f"http-{exc.code}"
-            error_body = exc.read().decode("utf-8") if exc.fp else ""
-            logger.error("HTTP error: %s %s %s", exc.code, exc.reason, error_body)
-            st.error(f"Request failed: {exc.code} {exc.reason}\n{error_body}")
-        except urllib.error.URLError as exc:
-            status = "url-error"
-            logger.error("URL error: %s", exc.reason)
-            st.error(f"Request failed: {exc.reason}")
-        except Exception as exc:
-            status = "error"
-            logger.exception("Unhandled error: %s", exc)
-            st.error(f"Request failed: {exc}")
-        finally:
-            elapsed_s = time.perf_counter() - started
-            metrics_line = (
-                f"agent={agent_choice} | endpoint={provider_name or '-'} | model={model or '-'} | "
-                f"status={status} | latency_s={elapsed_s:.2f}"
+            _add_turn_debug(
+                f"params temperature={temperature:.2f} top_p={top_p:.2f} max_tokens={int(max_tokens)} verify_tls={verify_tls}"
             )
-            if usage_summary:
-                metrics_line = f"{metrics_line} | {usage_summary}"
-            st.session_state.metrics_log.append(metrics_line)
-            logger.info("Completion: %s", metrics_line)
-            if not st.session_state._metrics_rerun:
-                st.session_state._metrics_rerun = True
-                st.rerun()
+            try:
+                if agent_choice == "General Chat Assistant":
+                    if endpoint:
+                        os.environ["AZURE_OPENAI_ENDPOINT"] = endpoint.strip().strip('"').strip("'")
+                        os.environ["AZURE_OPENAI_API_KEY"] = (api_key or "").strip().strip('"').strip("'")
+                    if model:
+                        os.environ["CHAT_MODEL"] = model
+                        os.environ["AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"] = model
+
+                if agent_choice == "General Chat Assistant":
+                    logger.info("Running General Chat Assistant agent")
+                    agent_build_started = time.perf_counter()
+                    agent = asyncio.run(azure_foundry_general_agent())
+                    agent_build_elapsed = time.perf_counter() - agent_build_started
+                    agent_init_elapsed = agent_build_elapsed
+                    history_messages = [
+                        ChatMessage(role=msg.get("role", "user"), text=msg.get("content", ""))
+                        for msg in st.session_state.messages
+                    ]
+                    est_input_tokens = _estimate_tokens_from_chat_messages(history_messages)
+                    _add_turn_debug(
+                        f"context short_term_messages={len(history_messages)} est_input_tokens={est_input_tokens} configured_max_output_tokens={int(max_tokens)}"
+                    )
+                    _add_turn_debug(f"agent_init latency_s={agent_build_elapsed:.2f}")
+                    llm_started = time.perf_counter()
+                    result = asyncio.run(run_with_retry(agent, history_messages))
+                    llm_elapsed = time.perf_counter() - llm_started
+                    model_call_elapsed = llm_elapsed
+                    content = _extract_display_text(getattr(result, "text", None) or str(result))
+                    usage = getattr(result, "usage_details", None)
+                    if usage:
+                        usage_summary = (
+                            f"input={usage.input_token_count or 0} "
+                            f"output={usage.output_token_count or 0} "
+                            f"total={usage.total_token_count or 0}"
+                        )
+                    usage_parsed = _parse_usage_summary(usage_summary)
+                    _add_turn_debug(
+                        f"llm_call latency_s={llm_elapsed:.2f} usage_input={usage_parsed['input']} usage_output={usage_parsed['output']} usage_total={usage_parsed['total']}"
+                    )
+                elif agent_choice == "Kaito Assistant":
+                    logger.info("Running Kaito Assistant agent")
+                    if endpoint:
+                        os.environ["KAITO_INFERENCE_ENDPOINT"] = _clean_env(endpoint)
+                    if api_key:
+                        os.environ["KAITO_API_KEY"] = api_key
+                    if model:
+                        os.environ["KAITO_MODEL"] = model
+                    _add_turn_debug(
+                        f"context short_term_messages=1 est_input_tokens={_estimate_tokens_from_text(prompt)} configured_max_output_tokens={int(max_tokens)}"
+                    )
+                    agent = _build_kaito_agent(model)
+                    llm_started = time.perf_counter()
+                    result = asyncio.run(run_with_retry(agent, prompt))
+                    llm_elapsed = time.perf_counter() - llm_started
+                    model_call_elapsed = llm_elapsed
+                    content = _extract_display_text(getattr(result, "text", None) or str(result))
+                    usage = getattr(result, "usage_details", None)
+                    if usage:
+                        usage_summary = (
+                            f"input={usage.input_token_count or 0} "
+                            f"output={usage.output_token_count or 0} "
+                            f"total={usage.total_token_count or 0}"
+                        )
+                    usage_parsed = _parse_usage_summary(usage_summary)
+                    _add_turn_debug(
+                        f"llm_call latency_s={llm_elapsed:.2f} usage_input={usage_parsed['input']} usage_output={usage_parsed['output']} usage_total={usage_parsed['total']}"
+                    )
+                elif agent_choice == "KAITO RAG Assistant":
+                    logger.info("Running KAITO RAG Assistant agent")
+                    if endpoint:
+                        os.environ["KAITO_RAGENGINE_ENDPOINT"] = _clean_env(endpoint)
+                    if api_key:
+                        os.environ["KAITO_RAGENGINE_API_KEY"] = api_key
+                    if model:
+                        os.environ["KAITO_MODEL"] = model
+                    _add_turn_debug(
+                        f"context short_term_messages=1 est_input_tokens={_estimate_tokens_from_text(prompt)} configured_max_output_tokens={int(max_tokens)}"
+                    )
+                    agent = _build_kaito_ragengine_agent(model)
+                    llm_started = time.perf_counter()
+                    result = asyncio.run(run_with_retry(agent, prompt))
+                    llm_elapsed = time.perf_counter() - llm_started
+                    model_call_elapsed = llm_elapsed
+                    content = _extract_display_text(getattr(result, "text", None) or str(result))
+                    usage = getattr(result, "usage_details", None)
+                    if usage:
+                        usage_summary = (
+                            f"input={usage.input_token_count or 0} "
+                            f"output={usage.output_token_count or 0} "
+                            f"total={usage.total_token_count or 0}"
+                        )
+                    usage_parsed = _parse_usage_summary(usage_summary)
+                    _add_turn_debug(
+                        f"llm_call latency_s={llm_elapsed:.2f} usage_input={usage_parsed['input']} usage_output={usage_parsed['output']} usage_total={usage_parsed['total']}"
+                    )
+                elif agent_choice == "Agent1 Demo":
+                    logger.info("Running Agent1 Demo")
+                    llm_started = time.perf_counter()
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        asyncio.run(agent1())
+                    llm_elapsed = time.perf_counter() - llm_started
+                    model_call_elapsed = llm_elapsed
+                    raw_output = output.getvalue().strip()
+                    content = _format_agent1_output(raw_output) or "No output from agent1."
+                    _add_turn_debug(f"workflow latency_s={llm_elapsed:.2f}")
+                else:
+                    logger.info("Running Fitness Nutrition agent")
+                    fitness_user_id = _normalize_user_id(st.session_state.get("fitness_user_name", "roy"))
+                    fitness_started = time.perf_counter()
+                    content, usage_summary = asyncio.run(
+                        _run_fitness_turn(
+                            user_prompt=prompt,
+                            user_id=fitness_user_id,
+                            selected_model=model,
+                            image_bytes=uploaded_food_image_bytes,
+                            image_name=uploaded_food_image_name,
+                        )
+                    )
+                    fitness_elapsed = time.perf_counter() - fitness_started
+                    model_call_elapsed = fitness_elapsed
+                    usage_parsed = _parse_usage_summary(usage_summary)
+                    _add_turn_debug(
+                        f"fitness_run latency_s={fitness_elapsed:.2f} usage_input={usage_parsed['input']} usage_output={usage_parsed['output']} usage_total={usage_parsed['total']}"
+                    )
+                    try:
+                        model_snapshot = get_fitness_repository(_fitness_db_path()).get_read_model(fitness_user_id, metric_limit=6, meal_limit=6)
+                        short_count = len([m for m in st.session_state.messages if m.get("role") in {"user", "assistant"}])
+                        long_profile = len(model_snapshot.get("profile", {})) if isinstance(model_snapshot.get("profile"), dict) else 0
+                        long_metrics = len(model_snapshot.get("recent_body_metrics", [])) if isinstance(model_snapshot.get("recent_body_metrics"), list) else 0
+                        long_meals = len(model_snapshot.get("recent_meals", [])) if isinstance(model_snapshot.get("recent_meals"), list) else 0
+                        _add_turn_debug(
+                            f"memory short_term_events={short_count} long_term_profile_fields={long_profile} long_term_body_metrics={long_metrics} long_term_meals={long_meals}"
+                        )
+                    except Exception as exc:
+                        _add_turn_debug(f"memory_snapshot failed error={exc}")
+
+                    memory_events = st.session_state.get("memory_debug_events", [])
+                    if isinstance(memory_events, list):
+                        _add_turn_debug(f"memory_events_count={len(memory_events)}")
+                        for event_line in memory_events[-6:]:
+                            _add_turn_debug(f"memory_event {event_line}")
+
+                if usage_summary:
+                    usage_parsed = _parse_usage_summary(usage_summary)
+                    _add_turn_debug(
+                        f"context_window usage_input={usage_parsed['input']} usage_output={usage_parsed['output']} usage_total={usage_parsed['total']} configured_max_output_tokens={int(max_tokens)}"
+                    )
+                else:
+                    _add_turn_debug(
+                        f"context_window usage_unavailable configured_max_output_tokens={int(max_tokens)} est_input_tokens={_estimate_tokens_from_text(prompt)}"
+                    )
+
+                st.markdown(content)
+                debug_snapshot = turn_debug_logs if debug_enabled else []
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": content, "debug_logs": debug_snapshot}
+                )
+            except urllib.error.HTTPError as exc:
+                status = f"http-{exc.code}"
+                error_body = exc.read().decode("utf-8") if exc.fp else ""
+                logger.error("HTTP error: %s %s %s", exc.code, exc.reason, error_body)
+                st.error(f"Request failed: {exc.code} {exc.reason}\n{error_body}")
+            except urllib.error.URLError as exc:
+                status = "url-error"
+                logger.error("URL error: %s", exc.reason)
+                st.error(f"Request failed: {exc.reason}")
+            except Exception as exc:
+                status = "error"
+                logger.exception("Unhandled error: %s", exc)
+                st.error(f"Request failed: {exc}")
+            finally:
+                elapsed_s = time.perf_counter() - started
+                post_elapsed = max(0.0, elapsed_s - agent_init_elapsed - model_call_elapsed)
+                if debug_enabled:
+                    _add_turn_debug(f"request_end status={status} total_latency_s={elapsed_s:.2f}")
+                metrics_line = (
+                    f"agent={agent_choice} | endpoint={provider_name or '-'} | model={model or '-'} | "
+                    f"status={status} | latency_s={elapsed_s:.2f} | "
+                    f"breakdown_s=init:{agent_init_elapsed:.2f},llm:{model_call_elapsed:.2f},post:{post_elapsed:.2f}"
+                )
+                if usage_summary:
+                    metrics_line = f"{metrics_line} | {usage_summary}"
+                st.session_state.metrics_log.append(metrics_line)
+                logger.info("Completion: %s", metrics_line)
+                if not st.session_state._metrics_rerun:
+                    st.session_state._metrics_rerun = True
+                    st.rerun()
 
 if debug_enabled:
     pass
