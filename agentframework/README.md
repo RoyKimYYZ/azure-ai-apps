@@ -101,7 +101,13 @@ cp .env-sample .env
 #   KAITO_RAGENGINE_ENDPOINT (e.g., http://ragengine-example.default.svc.cluster.local:80)
 ```
 
-### 3. Run Locally
+### 3. Initialize Starter Database (first-time setup)
+
+```bash
+cp sample-db/agentframework-starter.db agentframework.db
+```
+
+### 4. Run Locally
 
 ```bash
 # Streamlit chatbot UI
@@ -112,7 +118,7 @@ uv run python cli.py agent1
 uv run python cli.py fitness food-images/beef-egg-wrap.jpg
 ```
 
-### 4. Build and Push Docker Image
+### 5. Build and Push Docker Image
 
 ```bash
 # Build, push to ACR, and restart the AKS deployment
@@ -125,7 +131,7 @@ This script:
 3. Pushes `agentframework-chatbot:v1` to ACR
 4. Runs `kubectl rollout restart` to deploy the new image
 
-### 5. Deploy to AKS
+### 6. Deploy to AKS
 
 ```bash
 cd aks
@@ -144,7 +150,7 @@ The deployment script:
 3. Patches the Ingress host rule with the detected IP
 4. Applies all manifests via `kubectl apply -k`
 
-### 6. Access the Application
+### 7. Access the Application
 
 ```
 http://<INGRESS_EXTERNAL_IP>/agentframework-chatbot
