@@ -3,20 +3,18 @@ import os
 import sys
 import logging
 from pathlib import Path
-import json
 import yaml
 from agent_framework import ChatAgent
 from agent_framework.azure import AzureOpenAIChatClient
 from azure.identity import AzureCliCredential
 from dotenv import load_dotenv
 from jinja2 import Template
-from pydantic import BaseModel
 
 from config import Settings
-from db import DEFAULT_DB_PATH, StructuredOutputStore
 from ai_chat_client import KaitoChatClient
-from run_utils import run_with_retry, run_with_stream
+from run_utils import run_with_retry
 from logging_colors import ColorLogFormatter, strip_ansi, supports_color
+from agent1_demo import agent1
 
 
 def _str_to_bool(value: str | None, default: bool) -> bool:
@@ -76,45 +74,6 @@ def configure_logging() -> None:
 
 logger = logging.getLogger(__name__)
 
-
-class WorkflowPlan(BaseModel):
-    """
-    Represents a structured plan for a workflow, validated and serialized via Pydantic.
-
-    This model captures:
-    - ``steps``: An ordered list of step descriptions (strings) that define what to do.
-    - ``rationale``: A human-readable explanation for why these steps were chosen.
-
-    About Pydantic ``BaseModel``:
-    Pydantic's ``BaseModel`` is a base class that enables *runtime data parsing and
-    validation* based on Python type hints. By inheriting from ``BaseModel``, this
-    class gains features such as:
-
-    - Type validation and coercion when creating instances (e.g., ensuring ``steps``
-        is a list of strings).
-    - Helpful error messages when input data does not match the declared schema.
-    - Easy serialization/deserialization (e.g., to/from dict/JSON).
-    - Generated schema/metadata useful for docs and tooling.
-
-    Why ``BaseModel`` appears in the class definition:
-    In Python, ``class WorkflowPlan(BaseModel):`` means "define ``WorkflowPlan`` as a
-    subclass of ``BaseModel``." This inheritance is how ``WorkflowPlan`` obtains
-    Pydantic's validation/serialization behavior; without it, the annotations would
-    be ordinary type hints and no automatic validation would occur.
-    """
-    steps: list[str]
-    rationale: str
-
-
-class StructuredOutput(BaseModel):
-    """ Represents a structured output format with steps, rationale, and type.
-    Args:
-        BaseModel (_type_): _description_
-    """
-    steps: list[str]
-    rationale: str
-    type: str
-
 # Utility functions
 def load_prompt_template(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
@@ -141,136 +100,6 @@ def render_instructions(template: str, context: dict[str, str]) -> str:
     if "{{" in template and "}}" in template:
         return Template(template).render(**context)
     return template.format(**context)
-
-
-
-async def agent1() -> None:
-    """
-    Run a small two-step demo using an Azure OpenAI chat agent configured from a YAML
-    prompt template.
-    Overview:
-    - Loads environment variables from a `.env` file.
-    - Loads `assistant.yaml` from the local `prompts/` directory to obtain:
-        - `instructions` (formatted with optional CLI input),
-        - agent metadata such as `name`, `model`, `tools`,
-        - runtime settings like `max_iterations`, `temperature`, `top_p`, and `verbose`.
-    - Builds an `AzureOpenAIChatClient` using `AzureCliCredential()` and converts it to an agent.
-    - Executes two agent calls:
-        1) Ask for a pirate joke and print the response.
-        2) Ask the agent to produce a 3-step workflow in JSON using the previous response as context.
-    Inputs:
-    - Optional command-line argument `sys.argv[1]` is treated as `data_input` and is injected
-        into the `instructions` template via `.format(data_input=data_input)`.
-    Notes on the string-building syntax used for `workflow_prompt`:
-    - Parentheses `( ... )` around multiple string parts allow Python to treat them as a
-        single expression that spans multiple lines without using backslashes.
-    - When multiple string literals appear next to each other inside parentheses, Python
-        performs *implicit string literal concatenation*, e.g.:
-            ("a" "b")  -> "ab"
-    - This also works when mixing a normal string literal with an adjacent f-string, e.g.:
-            ("prefix " f"{value}") -> "prefix " + str(value)
-    - In this function, the `workflow_prompt` is formed by several adjacent string literals
-        plus a final f-string containing `result.text`, producing one combined prompt string.
-    """
-    load_dotenv()
-    logger.info("Starting agent1 demo - Hello from agentframework!")
-    prompt_path = Path(
-        os.getenv(
-            "PROMPT_TEMPLATE_PATH",
-            Path(__file__).parent / "prompts" / "assistant_jinja.yaml",
-        )
-    )
-    prompt = load_prompt_template(prompt_path)
-    
-    data_input = sys.argv[1] if len(sys.argv) > 1 else ""
-    instructions = render_instructions(
-        prompt.get("instructions", "You are a helpful assistant."),
-        {"data_input": data_input},
-    )
-
-    model_block = prompt.get("model", {})
-    model_id = model_block.get("id") if isinstance(model_block, dict) else model_block
-
-    chat_client = AzureOpenAIChatClient(credential=AzureCliCredential())
-    agent = ChatAgent(
-        chat_client=chat_client,
-        instructions=instructions,
-        name=prompt.get("name", "Assistant"),
-        model=model_id,
-        tools=prompt.get("tools", []),
-        max_tokens=prompt.get("max_tokens")
-    )
-    
-    if os.getenv("STREAM_OUTPUT", "1") == "1":
-        print("Step 1 result (streaming):")
-        result = await run_with_stream(agent, "Tell me a joke about a pirate.")
-    else:
-        result = await run_with_retry(agent, "Tell me a joke about a pirate.")
-        print("Step 1 result:\n", result.text)
-
-    workflow_prompt = (
-        "Using the previous response, create a simple 3-step workflow that shows how "
-        "an agent would proceed. Return a JSON object with keys: steps (array of strings) "
-        "and rationale (string).\n\nPrevious response:\n"
-        f"{result.text}"
-    )
-    workflow_plan = await run_with_retry(agent, workflow_prompt, response_format=WorkflowPlan)
-    print("Step 2 workflow:\n", workflow_plan)
-
-    if hasattr(workflow_plan, "model_dump"):
-        workflow_payload = workflow_plan.model_dump()
-    else:
-        workflow_payload = workflow_plan
-
-    structured_prompt = (
-        "Using this workflow plan, produce the final structured output as JSON with keys: "
-        "steps (array of strings), rationale (string), and type (string, must be 'Chat').\n\n"
-        f"Workflow plan:\n{workflow_payload}"
-    )
-    final_result = await run_with_retry(agent, structured_prompt, response_format=StructuredOutput)
-    print("Step 3 structured output:\n", final_result)
-
-    if hasattr(final_result, "model_dump"):
-        final_payload = final_result.model_dump()
-    elif hasattr(final_result, "parsed"):
-        final_payload = final_result.parsed
-    elif hasattr(final_result, "text"):
-        try:
-            final_payload = json.loads(final_result.text)
-        except json.JSONDecodeError:
-            final_payload = {
-                "steps": [final_result.text],
-                "rationale": "",
-                "type": "Chat",
-            }
-    else:
-        final_payload = final_result
-
-    store = StructuredOutputStore(DEFAULT_DB_PATH)
-    output_id = store.insert(
-        steps=final_payload.get("steps", []) if isinstance(final_payload, dict) else [],
-        rationale=final_payload.get("rationale", "") if isinstance(final_payload, dict) else "",
-        output_type=final_payload.get("type", "Chat") if isinstance(final_payload, dict) else "Chat",
-    )
-    print(f"Saved structured output with id={output_id}")
-
-    all_structured_outputs = store.list_all()
-    print("All structured outputs in the database:")
-    for output in all_structured_outputs:
-        # Best-effort conversion to a JSON-serializable dict
-        if hasattr(output, "model_dump"):
-            payload = output.model_dump()
-        elif hasattr(output, "_asdict"):
-            payload = output._asdict()
-        elif isinstance(output, dict):
-            payload = output
-        else:
-            try:
-                payload = dict(output)  # e.g., sqlite3.Row / mapping-like
-            except Exception:
-                payload = {"value": output}
-
-        print(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True, default=str))
 
 async def azure_foundry_general_agent() -> None:
     load_dotenv()

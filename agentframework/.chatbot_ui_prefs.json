@@ -1,0 +1,6 @@
+{
+  "agent_choice": "Agent1 Demo",
+  "model_by_agent": {
+    "Agent1 Demo": "gpt-5-mini"
+  }
+}

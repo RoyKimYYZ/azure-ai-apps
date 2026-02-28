@@ -1,7 +1,9 @@
 import asyncio
 import hashlib
 import html
+import importlib
 import io
+import inspect
 import json
 import logging
 import mimetypes
@@ -16,6 +18,7 @@ from urllib.parse import urlparse
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import streamlit as st
@@ -197,41 +200,64 @@ def _extract_display_text(payload: object) -> str:
 def _format_agent1_output(raw_output: str) -> str:
     if not raw_output:
         return ""
-    lines = [line.strip() for line in raw_output.splitlines() if line.strip()]
-    step1 = ""
-    step2 = ""
-    step3 = ""
+    lines = raw_output.splitlines()
+    section_lines: dict[str, list[str]] = {
+        "step1": [],
+        "step15": [],
+        "step2": [],
+        "step3": [],
+        "step4": [],
+    }
     current_step = None
+
+    def _append_to_current(line_value: str) -> None:
+        if current_step in section_lines:
+            section_lines[current_step].append(line_value)
+
     for line in lines:
-        if line.lower().startswith("step 1 result"):
+        line_lower = line.strip().lower()
+        if line_lower.startswith("step 1 result"):
             current_step = "step1"
             inline = line.split(":", 1)[1].strip() if ":" in line else ""
             if inline:
-                step1 = f"{step1} {inline}".strip()
+                _append_to_current(inline)
             continue
-        if line.lower().startswith("step 2 workflow"):
+        if line_lower.startswith("step 1.5 repo context"):
+            current_step = "step15"
+            inline = line.split(":", 1)[1].strip() if ":" in line else ""
+            if inline:
+                _append_to_current(inline)
+            continue
+        if line_lower.startswith("step 2 workflow"):
             current_step = "step2"
             inline = line.split(":", 1)[1].strip() if ":" in line else ""
             if inline:
-                step2 = f"{step2} {inline}".strip()
+                _append_to_current(inline)
             continue
-        if line.lower().startswith("step 3 structured output"):
+        if line_lower.startswith("step 3 structured output"):
             current_step = "step3"
             inline = line.split(":", 1)[1].strip() if ":" in line else ""
             if inline:
-                step3 = f"{step3} {inline}".strip()
+                _append_to_current(inline)
             continue
-        if line.lower().startswith("tokens:") or line.lower().startswith("hello from agentframework"):
+        if line_lower.startswith("step 4 evidence block"):
+            current_step = "step4"
+            inline = line.split(":", 1)[1].strip() if ":" in line else ""
+            if inline:
+                _append_to_current(inline)
+            continue
+        if line_lower.startswith("tokens:") or line_lower.startswith("hello from agentframework"):
             continue
 
-        if current_step == "step1":
-            step1 = f"{step1} {line}".strip()
-        elif current_step == "step2":
-            step2 = f"{step2} {line}".strip()
-        elif current_step == "step3":
-            step3 = f"{step3} {line}".strip()
+        _append_to_current(line)
 
-    if not (step1 or step2 or step3):
+    step1 = "\n".join(section_lines["step1"]).strip()
+    step15 = "\n".join(section_lines["step15"]).strip()
+    step2 = "\n".join(section_lines["step2"]).strip()
+    step3 = "\n".join(section_lines["step3"]).strip()
+    step4 = "\n".join(section_lines["step4"]).strip()
+
+    if not (step1 or step15 or step2 or step3 or step4):
         return raw_output
 
     def _pretty_json(text: str) -> str:
@@ -239,20 +265,270 @@ def _format_agent1_output(raw_output: str) -> str:
         if not text:
             return text
         try:
-            return json.dumps(json.loads(text), indent=2)
+            parsed = json.loads(text)
+            if isinstance(parsed, str):
+                nested = parsed.strip()
+                if nested.startswith("{") or nested.startswith("["):
+                    try:
+                        parsed = json.loads(nested)
+                    except json.JSONDecodeError:
+                        return parsed
+            return json.dumps(parsed, indent=2, ensure_ascii=False)
         except json.JSONDecodeError:
             return text
+
+    def _load_json_like(text: str) -> dict[str, Any] | None:
+        text = text.strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, str):
+                nested = parsed.strip()
+                if nested.startswith("{") or nested.startswith("["):
+                    parsed = json.loads(nested)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+
+    def _truncate(value: str, max_len: int = 120) -> str:
+        compact = " ".join(value.split())
+        return compact if len(compact) <= max_len else f"{compact[:max_len - 1]}…"
+
+    def _format_step4_visual(step4_raw: str) -> str:
+        payload = _load_json_like(_extract_display_text(step4_raw))
+        if not isinstance(payload, dict):
+            fallback = _pretty_json(_extract_display_text(step4_raw))
+            return "\n".join(f"    {line}" for line in fallback.splitlines())
+
+        grounding_path = str(payload.get("grounding_path") or "n/a")
+        error = payload.get("error")
+        matched_lines = payload.get("matched_lines") if isinstance(payload.get("matched_lines"), list) else []
+        clean_lines = [str(line) for line in matched_lines if str(line).strip()]
+        lines_to_show = clean_lines[:3]
+        status_badge = "🟩 Evidence OK" if not error else "🟥 Evidence Error"
+
+        parts: list[str] = [
+            "### 🧾 Step 4 Evidence Summary",
+            f"- {status_badge}",
+            f"- 📄 **File:** `{grounding_path}`",
+            f"- 🔎 **Matches:** {len(clean_lines)}",
+        ]
+        if error:
+            parts.append(f"- ⚠️ **Error:** {_truncate(str(error), 140)}")
+
+        if lines_to_show:
+            parts.append("- ✨ **Top matched lines:**")
+            for idx, line in enumerate(lines_to_show, start=1):
+                parts.append(f"  - {idx}. {_truncate(line, 140)}")
+        else:
+            parts.append("- ℹ️ No matched evidence lines captured.")
+
+        return "\n".join(parts)
 
     parts = []
     if step1:
         parts.append(f"**Step 1:**\n\n    {step1}")
+    if step15:
+        step15_text = _pretty_json(_extract_display_text(step15))
+        parts.append("**Step 1.5:**\n\n" + "\n".join(f"    {line}" for line in step15_text.splitlines()))
     if step2:
         step2_text = _pretty_json(_extract_display_text(step2))
         parts.append("**Step 2:**\n\n" + "\n".join(f"    {line}" for line in step2_text.splitlines()))
     if step3:
         step3_text = _pretty_json(_extract_display_text(step3))
         parts.append("**Step 3:**\n\n" + "\n".join(f"    {line}" for line in step3_text.splitlines()))
+    if step4:
+        parts.append("**Step 4:**\n\n" + _format_step4_visual(step4))
     return "\n\n".join(parts)
+
+
+def _agent1_trace_state() -> list[dict[str, Any]]:
+    return st.session_state.setdefault("agent1_mcp_trace", [])
+
+
+def _append_agent1_trace(direction: str, method: str, payload: dict[str, Any] | None = None) -> None:
+    events = _agent1_trace_state()
+    events.append(
+        {
+            "ts": datetime.now(ZoneInfo(_browser_timezone_name())).strftime("%H:%M:%S"),
+            "direction": direction,
+            "method": method,
+            "payload": payload or {},
+        }
+    )
+    if len(events) > 120:
+        del events[:-120]
+
+
+def _render_agent1_trace(placeholder: Any | None = None) -> None:
+    events = _agent1_trace_state()
+    visible_events = events[-20:]
+
+    def _event_kind(method: str) -> str:
+        lowered = method.lower()
+        if "initialize" in lowered:
+            return "initialize"
+        if "tools/call" in lowered:
+            return "tools_call"
+        if "tools/result" in lowered:
+            return "tools_result"
+        if "error" in lowered:
+            return "error"
+        if "complete" in lowered:
+            return "complete"
+        return "other"
+
+    kind_badge = {
+        "initialize": "🟦 INIT",
+        "tools_call": "🟪 CALL",
+        "tools_result": "🟩 RESULT",
+        "error": "🟥 ERROR",
+        "complete": "🟨 DONE",
+        "other": "⬜ EVENT",
+    }
+
+    event_lines: list[str] = []
+    sequence_lines: list[str] = []
+    for event in visible_events:
+        direction = event.get("direction") or "client->server"
+        arrow = "➡️" if direction == "client->server" else "⬅️"
+        method = event.get("method") or "unknown"
+        ts = event.get("ts") or "--:--:--"
+        kind = _event_kind(method)
+        event_lines.append(f"- {ts} {kind_badge[kind]} {arrow} **{method}**")
+
+        if direction == "client->server":
+            sequence_lines.append(f"Client -> Server: {method}")
+        else:
+            sequence_lines.append(f"Server --> Client: {method}")
+
+        payload = event.get("payload")
+        if isinstance(payload, dict) and payload:
+            event_lines.append("```json")
+            event_lines.append(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
+            event_lines.append("```")
+
+    if not visible_events:
+        markdown = "_No MCP trace events yet._"
+    else:
+        markdown = (
+            "**Sequence View**\n\n"
+            "```text\n"
+            + "\n".join(sequence_lines)
+            + "\n```\n\n"
+            "**Event Log**\n\n"
+            + "\n".join(event_lines)
+        )
+
+    target = placeholder if placeholder is not None else st
+    target.markdown(markdown)
+
+
+class _Agent1LiveCapture:
+    def __init__(self, trace_placeholder: Any | None = None) -> None:
+        self._trace_placeholder = trace_placeholder
+        self._raw_chunks: list[str] = []
+        self._line_buffer = ""
+        self._json_label: str | None = None
+        self._json_lines: list[str] = []
+        self._brace_balance = 0
+
+    def write(self, data: str) -> int:
+        self._raw_chunks.append(data)
+        self._line_buffer += data
+        while "\n" in self._line_buffer:
+            line, self._line_buffer = self._line_buffer.split("\n", 1)
+            self._handle_line(line)
+        return len(data)
+
+    def flush(self) -> None:
+        return
+
+    def getvalue(self) -> str:
+        return "".join(self._raw_chunks)
+
+    def _refresh(self) -> None:
+        _render_agent1_trace(self._trace_placeholder)
+
+    def _try_parse_json_block(self, label: str, text: str) -> None:
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return
+        if not isinstance(payload, dict):
+            return
+
+        if label == "step15":
+            query = payload.get("query")
+            selected_path = payload.get("selected_path")
+            candidates = payload.get("candidate_paths") or []
+            _append_agent1_trace("client->server", "tools/call search_repo_paths", {"query": query})
+            _append_agent1_trace(
+                "server->client",
+                "tools/result search_repo_paths",
+                {"count": len(candidates), "selected_path": selected_path},
+            )
+            if selected_path:
+                _append_agent1_trace(
+                    "client->server",
+                    "tools/call read_repo_file",
+                    {"path": selected_path, "start_line": 1, "end_line": 80},
+                )
+                _append_agent1_trace(
+                    "server->client",
+                    "tools/result read_repo_file",
+                    {"path": selected_path, "excerpt_available": True},
+                )
+            self._refresh()
+        elif label == "step4":
+            _append_agent1_trace("server->client", "trace/evidence", payload)
+            self._refresh()
+
+    def _handle_line(self, line: str) -> None:
+        stripped = line.strip()
+        if not stripped:
+            return
+
+        lowered = stripped.lower()
+        if lowered.startswith("step 1 result"):
+            _append_agent1_trace("client->server", "chat/request step1", {})
+            self._refresh()
+            return
+        if lowered.startswith("step 2 workflow"):
+            _append_agent1_trace("server->client", "chat/response workflow", {})
+            self._refresh()
+            return
+        if lowered.startswith("step 3 structured output"):
+            _append_agent1_trace("server->client", "chat/response structured_output", {})
+            self._refresh()
+            return
+        if lowered.startswith("step 1.5 repo context"):
+            self._json_label = "step15"
+            self._json_lines = []
+            self._brace_balance = 0
+            self._refresh()
+            return
+        if lowered.startswith("step 4 evidence block"):
+            self._json_label = "step4"
+            self._json_lines = []
+            self._brace_balance = 0
+            self._refresh()
+            return
+
+        if self._json_label:
+            if not self._json_lines and "{" not in stripped:
+                return
+            self._json_lines.append(line)
+            self._brace_balance += line.count("{") - line.count("}")
+            if self._brace_balance <= 0 and self._json_lines:
+                label = self._json_label
+                text = "\n".join(self._json_lines)
+                self._json_label = None
+                self._json_lines = []
+                self._brace_balance = 0
+                self._try_parse_json_block(label, text)
+
 
 
 def _build_kaito_agent(model: str) -> ChatAgent:
@@ -770,6 +1046,27 @@ def _format_metrics_entry(entry: str) -> str:
     return f"🟩 ok {entry}"
 
 
+def _agent1_prompts_dir() -> Path:
+    return PROJECT_ROOT / "prompts"
+
+
+def _agent1_list_prompt_templates() -> list[str]:
+    prompts_dir = _agent1_prompts_dir()
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    return sorted(path.name for path in prompts_dir.glob("*.yaml") if path.is_file())
+
+
+def _agent1_normalize_template_name(raw_name: str) -> str:
+    name = (raw_name or "").strip()
+    if not name:
+        raise ValueError("Template name is required.")
+    if any(ch in name for ch in ["/", "\\"]):
+        raise ValueError("Template name must not contain path separators.")
+    if not name.endswith(".yaml"):
+        name = f"{name}.yaml"
+    return name
+
+
 def _render_longterm_meal_block(meal: dict) -> str:
     meal_title = meal.get("meal_type") or "meal"
     meal_time = _short_local_datetime(meal.get("occurred_at"))
@@ -1035,6 +1332,26 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger("chatbot")
+PREFS_PATH = Path(__file__).resolve().parents[1] / ".chatbot_ui_prefs.json"
+
+
+def _load_ui_prefs() -> dict[str, Any]:
+    if not PREFS_PATH.exists():
+        return {}
+    try:
+        payload = json.loads(PREFS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _save_ui_prefs(prefs: dict[str, Any]) -> None:
+    try:
+        PREFS_PATH.write_text(json.dumps(prefs, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    except Exception:
+        logger.debug("Could not persist UI prefs", exc_info=True)
+
+
 AGENT_OPTIONS = [agent.get("name") for agent in AGENTS if agent.get("name")] or [
     "Azure Foundry General",
     "Kaito Assistant",
@@ -1046,11 +1363,23 @@ uploaded_food_image_bytes = None
 uploaded_food_image_name = ""
 fitness_user_name = st.session_state.get("fitness_user_name", "roy")
 chat_input_key = "chat_prompt_input"
+agent1_prompt_template_path = ""
+agent1_system_prompt_override = ""
+agent1_trace_placeholder: Any | None = None
+ui_prefs = _load_ui_prefs()
 
 with st.sidebar:
     st.header("Settings")
-    default_agent_index = AGENT_OPTIONS.index("Fitness Nutrition") if "Fitness Nutrition" in AGENT_OPTIONS else 0
+    saved_agent_choice = ui_prefs.get("agent_choice")
+    if isinstance(saved_agent_choice, str) and saved_agent_choice in AGENT_OPTIONS:
+        default_agent_index = AGENT_OPTIONS.index(saved_agent_choice)
+    else:
+        default_agent_index = AGENT_OPTIONS.index("Fitness Nutrition") if "Fitness Nutrition" in AGENT_OPTIONS else 0
     agent_choice = st.selectbox("Agent", AGENT_OPTIONS, index=default_agent_index)
+    if ui_prefs.get("agent_choice") != agent_choice:
+        ui_prefs["agent_choice"] = agent_choice
+        _save_ui_prefs(ui_prefs)
+
     agent_config = next((agent for agent in AGENTS if agent.get("name") == agent_choice), {})
     provider_name = agent_config.get("provider")
     provider_config = next((p for p in PROVIDERS if p.get("name") == provider_name), {})
@@ -1090,13 +1419,24 @@ with st.sidebar:
         api_key = st.text_input("API Key", api_key, type="password")
     model_options = models or [model_default]
     model_key = "model_select"
+    saved_models = ui_prefs.get("model_by_agent")
+    saved_model_for_agent = saved_models.get(agent_choice) if isinstance(saved_models, dict) else None
     if model_key in st.session_state and st.session_state[model_key] in model_options:
         model_index = model_options.index(st.session_state[model_key])
+    elif isinstance(saved_model_for_agent, str) and saved_model_for_agent in model_options:
+        model_index = model_options.index(saved_model_for_agent)
     elif model_default in model_options:
         model_index = model_options.index(model_default)
     else:
         model_index = 0
     model = st.selectbox("Model", model_options, index=model_index, key=model_key)
+    model_by_agent = ui_prefs.get("model_by_agent")
+    if not isinstance(model_by_agent, dict):
+        model_by_agent = {}
+    if model_by_agent.get(agent_choice) != model:
+        model_by_agent[agent_choice] = model
+        ui_prefs["model_by_agent"] = model_by_agent
+        _save_ui_prefs(ui_prefs)
 
     temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
     max_tokens = st.number_input("Max tokens", min_value=1, max_value=4096, value=512, step=1)
@@ -1128,12 +1468,132 @@ with st.sidebar:
         else:
             st.caption("No completions yet.")
 
-if agent_choice == "Fitness Nutrition":
+if agent_choice in {"Fitness Nutrition", "Agent1 Demo"}:
     chat_col, right_col = st.columns([3.2, 1.2], gap="large")
 else:
     chat_col, right_col = st.container(), None
 
-if right_col is not None:
+if right_col is not None and agent_choice == "Agent1 Demo":
+    with right_col:
+        st.subheader("Agent1 Config")
+
+        templates = _agent1_list_prompt_templates()
+        if not templates:
+            default_template = "assistant_jinja.yaml"
+            default_path = _agent1_prompts_dir() / default_template
+            if not default_path.exists():
+                default_path.write_text(
+                    "name: Assistant\nmodel:\n  id: =Env.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME\ninstructions: You are a helpful assistant.\n",
+                    encoding="utf-8",
+                )
+            templates = _agent1_list_prompt_templates()
+
+        selected_template = st.selectbox("Prompt library", templates, key="agent1_template_select")
+        selected_template_path = _agent1_prompts_dir() / selected_template
+        agent1_prompt_template_path = str(selected_template_path)
+
+        selected_marker_key = "agent1_template_selected_marker"
+        if st.session_state.get(selected_marker_key) != selected_template:
+            try:
+                current_content = selected_template_path.read_text(encoding="utf-8")
+            except Exception:
+                current_content = ""
+            st.session_state["agent1_template_editor"] = current_content
+            try:
+                loaded = yaml.safe_load(current_content) or {}
+                default_instructions = str(loaded.get("instructions") or "")
+            except Exception:
+                default_instructions = ""
+            st.session_state["agent1_system_prompt_override"] = default_instructions
+            st.session_state[selected_marker_key] = selected_template
+
+        st.markdown("**System prompt**")
+        st.text_area(
+            "Agent1 system prompt",
+            key="agent1_system_prompt_override",
+            height=180,
+            label_visibility="collapsed",
+            help="Override the system prompt used by Agent1 for this session.",
+        )
+        agent1_system_prompt_override = (st.session_state.get("agent1_system_prompt_override") or "").strip()
+
+        st.markdown("**Template editor**")
+        template_content = st.text_area(
+            "template_content",
+            key="agent1_template_editor",
+            height=260,
+            label_visibility="collapsed",
+        )
+
+        save_col, delete_col = st.columns(2)
+        with save_col:
+            if st.button("Save template", key="agent1_save_template_btn"):
+                try:
+                    selected_template_path.write_text(template_content, encoding="utf-8")
+                    st.success(f"Saved {selected_template}")
+                except Exception as exc:
+                    st.error(f"Save failed: {exc}")
+        with delete_col:
+            delete_disabled = len(templates) <= 1
+            if st.button("Delete template", key="agent1_delete_template_btn", disabled=delete_disabled):
+                try:
+                    selected_template_path.unlink(missing_ok=False)
+                    st.success(f"Deleted {selected_template}")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Delete failed: {exc}")
+
+        st.divider()
+        st.markdown("**Add new template**")
+        new_template_name = st.text_input("New template name", key="agent1_new_template_name")
+        new_template_content = st.text_area(
+            "New template content",
+            key="agent1_new_template_content",
+            height=140,
+        )
+        if st.button("Add template", key="agent1_add_template_btn"):
+            try:
+                normalized_name = _agent1_normalize_template_name(new_template_name)
+                new_path = _agent1_prompts_dir() / normalized_name
+                if new_path.exists():
+                    raise ValueError(f"Template already exists: {normalized_name}")
+                write_content = (
+                    new_template_content.strip()
+                    if new_template_content.strip()
+                    else "name: Assistant\nmodel:\n  id: =Env.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME\ninstructions: You are a helpful assistant.\n"
+                )
+                new_path.write_text(write_content, encoding="utf-8")
+                st.success(f"Added {normalized_name}")
+                st.session_state["agent1_template_select"] = normalized_name
+                st.session_state["agent1_new_template_name"] = ""
+                st.session_state["agent1_new_template_content"] = ""
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Add failed: {exc}")
+
+        st.divider()
+        st.markdown("**Context window info**")
+        short_messages = [
+            msg for msg in st.session_state.messages if msg.get("role") in {"user", "assistant"}
+        ]
+        short_text = "\n".join((msg.get("content") or "") for msg in short_messages)
+        est_input_tokens = _estimate_tokens_from_text(short_text)
+        st.caption(
+            f"short_term_messages={len(short_messages)} est_input_tokens={est_input_tokens} configured_max_output_tokens={int(max_tokens)}"
+        )
+        if st.session_state.metrics_log:
+            st.caption(f"last_metrics={st.session_state.metrics_log[-1]}")
+
+        st.divider()
+        st.markdown("**MCP Wire Trace (Live)**")
+        clear_trace_col, _ = st.columns([1, 1])
+        with clear_trace_col:
+            if st.button("Clear trace", key="agent1_clear_trace_btn"):
+                st.session_state["agent1_mcp_trace"] = []
+        agent1_trace_placeholder = st.empty()
+        _render_agent1_trace(agent1_trace_placeholder)
+
+if right_col is not None and agent_choice == "Fitness Nutrition":
     with right_col:
         st.subheader("Fitness Context")
         fitness_user_name_input = st.text_input(
@@ -1352,12 +1812,16 @@ with chat_col:
                     st.markdown(message["content"])
                 with tabs[1]:
                     debug_text = "\n".join(message.get("debug_logs", []))
-                    st.text_area(
-                        "Log output",
-                        value=debug_text,
-                        height=220,
-                        disabled=True,
-                        key=f"debug_logs_{idx}",
+                    if not debug_text.strip():
+                        debug_text = "No debug logs captured for this response."
+                    st.markdown(
+                        (
+                            "<div style='background-color:#111111;padding:0.75rem;border-radius:0.5rem;'>"
+                            "<pre style='white-space:pre-wrap;color:#ffffff;margin:0;font-size:0.8rem;'>"
+                            f"{html.escape(debug_text)}"
+                            "</pre></div>"
+                        ),
+                        unsafe_allow_html=True,
                     )
             else:
                 st.markdown(message["content"])
@@ -1486,13 +1950,35 @@ with chat_col:
                     )
                 elif agent_choice == "Agent1 Demo":
                     logger.info("Running Agent1 Demo")
+                    if agent1_prompt_template_path:
+                        os.environ["AGENT1_PROMPT_TEMPLATE_PATH"] = agent1_prompt_template_path
+                    else:
+                        os.environ.pop("AGENT1_PROMPT_TEMPLATE_PATH", None)
+
+                    if agent1_system_prompt_override:
+                        os.environ["AGENT1_SYSTEM_PROMPT_OVERRIDE"] = agent1_system_prompt_override
+                    else:
+                        os.environ.pop("AGENT1_SYSTEM_PROMPT_OVERRIDE", None)
+
                     llm_started = time.perf_counter()
-                    output = io.StringIO()
+                    _append_agent1_trace("client->server", "initialize", {"transport": "stdio"})
+                    _render_agent1_trace(agent1_trace_placeholder)
+                    output = _Agent1LiveCapture(trace_placeholder=agent1_trace_placeholder)
                     with redirect_stdout(output):
-                        asyncio.run(agent1())
+                        import agent1_demo as agent1_demo_module
+
+                        importlib.reload(agent1_demo_module)
+                        runtime_agent1 = agent1_demo_module.agent1
+                        params = inspect.signature(runtime_agent1).parameters
+                        if len(params) >= 1:
+                            asyncio.run(runtime_agent1(prompt))
+                        else:
+                            asyncio.run(runtime_agent1())
                     llm_elapsed = time.perf_counter() - llm_started
                     model_call_elapsed = llm_elapsed
                     raw_output = output.getvalue().strip()
+                    _append_agent1_trace("server->client", "run/complete", {"ok": bool(raw_output)})
+                    _render_agent1_trace(agent1_trace_placeholder)
                     content = _format_agent1_output(raw_output) or "No output from agent1."
                     _add_turn_debug(f"workflow latency_s={llm_elapsed:.2f}")
                 else:
@@ -1551,15 +2037,42 @@ with chat_col:
                 status = f"http-{exc.code}"
                 error_body = exc.read().decode("utf-8") if exc.fp else ""
                 logger.error("HTTP error: %s %s %s", exc.code, exc.reason, error_body)
-                st.error(f"Request failed: {exc.code} {exc.reason}\n{error_body}")
+                error_message = f"Request failed: {exc.code} {exc.reason}\n{error_body}"
+                _add_turn_debug(f"error type=http code={exc.code} reason={exc.reason}")
+                st.error(error_message)
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": f"❌ {error_message}",
+                        "debug_logs": turn_debug_logs if debug_enabled else [],
+                    }
+                )
             except urllib.error.URLError as exc:
                 status = "url-error"
                 logger.error("URL error: %s", exc.reason)
-                st.error(f"Request failed: {exc.reason}")
+                error_message = f"Request failed: {exc.reason}"
+                _add_turn_debug(f"error type=url reason={exc.reason}")
+                st.error(error_message)
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": f"❌ {error_message}",
+                        "debug_logs": turn_debug_logs if debug_enabled else [],
+                    }
+                )
             except Exception as exc:
                 status = "error"
                 logger.exception("Unhandled error: %s", exc)
-                st.error(f"Request failed: {exc}")
+                error_message = f"Request failed: {exc}"
+                _add_turn_debug(f"error type=exception class={type(exc).__name__} detail={exc}")
+                st.error(error_message)
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": f"❌ {error_message}",
+                        "debug_logs": turn_debug_logs if debug_enabled else [],
+                    }
+                )
             finally:
                 elapsed_s = time.perf_counter() - started
                 post_elapsed = max(0.0, elapsed_s - agent_init_elapsed - model_call_elapsed)
