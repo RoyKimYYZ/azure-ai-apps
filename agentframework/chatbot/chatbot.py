@@ -794,28 +794,11 @@ def _short_local_datetime(value: str | None) -> str:
 
 def _resolve_memory_user_id(user_name: str) -> tuple[str, bool]:
     normalized = _normalize_user_id(user_name)
-    db_path = _fitness_db_path()
-    if not db_path.exists():
-        return normalized, False
-
     try:
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            by_id = conn.execute(
-                "SELECT user_id FROM users WHERE lower(user_id) = lower(?) LIMIT 1",
-                (normalized,),
-            ).fetchone()
-            if by_id:
-                return str(by_id["user_id"]), False
-
-            by_name = conn.execute(
-                "SELECT user_id FROM users WHERE lower(name) = lower(?) ORDER BY updated_at DESC LIMIT 1",
-                (normalized,),
-            ).fetchone()
-            if by_name:
-                return str(by_name["user_id"]), True
+        repo = get_fitness_repository(_fitness_db_path())
+        return repo.resolve_user_id(normalized)
     except Exception:
-        logger.exception("Could not resolve memory user id by name")
+        logger.exception("Could not resolve memory user id")
 
     return normalized, False
 
@@ -1836,10 +1819,12 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
 
         st.divider()
         with st.expander("Memory Debug", expanded=False):
-            debug_user_id = _normalize_user_id(st.session_state.get("fitness_user_name", "roy"))
+            debug_user_id, debug_resolved = _resolve_memory_user_id(st.session_state.get("fitness_user_name", "roy"))
             debug_session_key = f"fitness:{debug_user_id}"
             st.caption(f"db_path={_fitness_db_path()}")
             st.caption(f"user_id={debug_user_id} | session_key={debug_session_key}")
+            if debug_resolved:
+                st.caption("user name resolved via external key or profile name match")
 
             short_all = [msg for msg in st.session_state.messages if msg.get("role") in {"user", "assistant"}]
             user_turns = len([msg for msg in short_all if msg.get("role") == "user"])
@@ -2071,7 +2056,7 @@ with chat_col:
                     _add_turn_debug(f"workflow latency_s={llm_elapsed:.2f}")
                 else:
                     logger.info("Running Fitness Nutrition agent")
-                    fitness_user_id = _normalize_user_id(st.session_state.get("fitness_user_name", "roy"))
+                    fitness_user_id, _ = _resolve_memory_user_id(st.session_state.get("fitness_user_name", "roy"))
                     # Route to the right backend based on the model chosen in the sidebar dropdown.
                     # model_backends in config.yaml maps model names to provider names.
                     _fit_agent_cfg = next((a for a in AGENTS if a.get("name") == "Fitness Nutrition"), {})

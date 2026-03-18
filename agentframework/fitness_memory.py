@@ -226,6 +226,8 @@ class IngestionRunStart:
 
 
 class FitnessMemoryRepository(Protocol):
+    def resolve_user_id(self, user_name: str) -> tuple[str, bool]: ...
+
     def get_read_model(self, user_id: str, *, metric_limit: int = 10, meal_limit: int = 10) -> dict[str, Any]: ...
 
     def start_ingestion_run(
@@ -299,6 +301,38 @@ class SQLiteFitnessMemoryRepository:
             """,
             (user_id, user_id, utc_now_iso(), utc_now_iso()),
         )
+
+    def resolve_user_id(self, user_name: str) -> tuple[str, bool]:
+        normalized = (user_name or "").strip() or "default-user"
+        if not self.db_path.exists():
+            return normalized, False
+
+        try:
+            with self._conn() as conn:
+                by_id = conn.execute(
+                    "SELECT user_id FROM users WHERE lower(user_id) = lower(?) LIMIT 1",
+                    (normalized,),
+                ).fetchone()
+                if by_id:
+                    return str(by_id["user_id"]), False
+
+                by_external_key = conn.execute(
+                    "SELECT user_id FROM users WHERE lower(external_user_key) = lower(?) ORDER BY updated_at DESC LIMIT 1",
+                    (normalized,),
+                ).fetchone()
+                if by_external_key:
+                    return str(by_external_key["user_id"]), True
+
+                by_name = conn.execute(
+                    "SELECT user_id FROM users WHERE lower(name) = lower(?) ORDER BY updated_at DESC LIMIT 1",
+                    (normalized,),
+                ).fetchone()
+                if by_name:
+                    return str(by_name["user_id"]), True
+        except sqlite3.Error:
+            return normalized, False
+
+        return normalized, False
 
     def _apply_profile_updates(self, conn: sqlite3.Connection, user_id: str, updates: list[ProfileUpdate]) -> dict[str, Any]:
         diagnostics: dict[str, Any] = {
@@ -764,6 +798,37 @@ class AzureSqlFitnessMemoryRepository:
 
     def _table(self, name: str) -> str:
         return f"[{self.schema}].[{name}]"
+
+    def resolve_user_id(self, user_name: str) -> tuple[str, bool]:
+        normalized = (user_name or "").strip() or "default-user"
+        with self._conn() as conn:
+            cursor = conn.cursor()
+
+            by_id_cursor = cursor.execute(
+                f"SELECT TOP 1 user_id FROM {self._table('users')} WHERE LOWER(user_id) = LOWER(?)",
+                (normalized,),
+            )
+            by_id_row = by_id_cursor.fetchone()
+            if by_id_row:
+                return str(by_id_row[0]), False
+
+            by_external_key_cursor = cursor.execute(
+                f"SELECT TOP 1 user_id FROM {self._table('users')} WHERE LOWER(external_user_key) = LOWER(?) ORDER BY updated_at DESC",
+                (normalized,),
+            )
+            by_external_key_row = by_external_key_cursor.fetchone()
+            if by_external_key_row:
+                return str(by_external_key_row[0]), True
+
+            by_name_cursor = cursor.execute(
+                f"SELECT TOP 1 user_id FROM {self._table('users')} WHERE LOWER(name) = LOWER(?) ORDER BY updated_at DESC",
+                (normalized,),
+            )
+            by_name_row = by_name_cursor.fetchone()
+            if by_name_row:
+                return str(by_name_row[0]), True
+
+        return normalized, False
 
     def _conn(self) -> Any:
         pyodbc, DefaultAzureCredential = _import_azure_sql_runtime()
