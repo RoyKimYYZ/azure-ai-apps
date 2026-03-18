@@ -27,6 +27,13 @@ providers:
     default_index_name: rag_index
     embedding_model: BAAI/bge-small-en-v1.5
 
+  - name: KAITO phi-4
+    endpoint_env: KAITO_PHI4_ENDPOINT
+    # api_key_env omitted – no auth on public ingress path
+    models_env: [phi-4]
+    default_endpoint: https://ai.roykim.ca/phi4
+    default_model: phi-4
+
 agents:
   - name: General Chat Assistant
     provider: AI Foundry
@@ -39,6 +46,11 @@ agents:
     model: phi-4-mini-instruct
   - name: Fitness Nutrition
     provider: AI Foundry
+    # extra_models are merged into the sidebar Model dropdown for this agent.
+    # model_backends maps a model name to the provider that serves it.
+    extra_models: [phi-4]
+    model_backends:
+      phi-4: KAITO phi-4
   - name: Agent1 Demo
     provider: AI Foundry
 

@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from openai import RateLimitError
 from prompt_toolkit import PromptSession
 
-from config import Settings
+from app_settings import Settings
 from fitness_memory import (
     DatabaseContextProvider,
     PhotoSubmissionStructuredOutput,
@@ -252,11 +252,12 @@ async def fitness_agent(image_path: str | None = None) -> None:
     """Run a multi-turn fitness and nutrition assistant with short-term thread memory and long-term database memory."""
 
     load_dotenv()
+    settings = Settings()
     startup_image = image_path or (sys.argv[1] if len(sys.argv) > 1 else None)
     user_id = os.getenv("FITNESS_USER_ID") or await _prompt_text("User ID [default-user]: ") or "default-user"
     session_key = os.getenv("FITNESS_SESSION_KEY") or f"fitness:{user_id}"
     agent_name = "fitness_agent"
-    repo = get_fitness_repository(Settings().db_path)
+    repo = get_fitness_repository(settings=settings)
 
     _status("Initializing fitness agent...")
 
@@ -271,7 +272,7 @@ async def fitness_agent(image_path: str | None = None) -> None:
         chat_client=chat_client,
         instructions=instructions,
         name=agent_name,
-        model=Settings().azure_openai_chat_deployment,
+        model=settings.azure_openai_chat_deployment,
         context_providers=[context_provider],
         tools=[],
         max_completion_tokens=800,

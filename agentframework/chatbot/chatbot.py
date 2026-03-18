@@ -31,10 +31,40 @@ LOG_LEVEL_ENV = "LOG_LEVEL"
 DEBUG_LOG_MAX_LINES_ENV = "DEBUG_LOG_MAX_LINES"
 
 
+def _sensitive_values() -> list[str]:
+    values: list[str] = []
+    for env_name, env_value in os.environ.items():
+        upper_name = env_name.upper()
+        if not any(token in upper_name for token in ("ENDPOINT", "API_KEY", "TOKEN", "SECRET", "PASSWORD")):
+            continue
+        cleaned = _clean_env(env_value)
+        if cleaned:
+            values.append(cleaned)
+
+    providers = globals().get("PROVIDERS", [])
+    if isinstance(providers, list):
+        for provider in providers:
+            if not isinstance(provider, dict):
+                continue
+            default_endpoint = _clean_env(provider.get("default_endpoint"))
+            if default_endpoint:
+                values.append(default_endpoint)
+
+    return sorted(set(values), key=len, reverse=True)
+
+
+def _redact_sensitive_text(value: Any) -> str:
+    text = str(value)
+    for sensitive in _sensitive_values():
+        text = text.replace(sensitive, "[redacted]")
+    text = re.sub(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+", r"\1[redacted]", text)
+    return text
+
+
 class _SessionLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            message = self.format(record)
+            message = _redact_sensitive_text(self.format(record))
             logs = st.session_state.setdefault("debug_logs", [])
             logs.append(message)
             max_lines = int(os.getenv(DEBUG_LOG_MAX_LINES_ENV, "200"))
@@ -57,7 +87,7 @@ def _ensure_debug_log_handler() -> None:
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from agent_framework import ChatAgent, ChatMessage, DataContent, TextContent
 from agent_framework.azure import AzureOpenAIChatClient
@@ -606,6 +636,34 @@ def _build_kaito_ragengine_agent(model: str, index_name: str | None = None) -> C
     )
 
 
+def _build_fitness_chat_client(backend_cfg: dict, providers: list[dict]):
+    """Return (chat_client, model_id) for a Fitness Nutrition backend config entry."""
+    provider_name = backend_cfg.get("provider", "AI Foundry")
+    model_id = backend_cfg.get("model", "")
+    provider_cfg = next((p for p in providers if p.get("name") == provider_name), {})
+    if not model_id:
+        model_id = provider_cfg.get("default_model", "")
+
+    endpoint_env = provider_cfg.get("endpoint_env")
+    endpoint_default = provider_cfg.get("default_endpoint", "")
+    resolved_endpoint = _clean_env(os.getenv(endpoint_env, endpoint_default)) if endpoint_env else endpoint_default
+
+    api_key_env = provider_cfg.get("api_key_env")
+    api_key = _clean_env(os.getenv(api_key_env)) if api_key_env else ""
+
+    if provider_name == "AI Foundry":
+        if resolved_endpoint:
+            os.environ["AZURE_OPENAI_ENDPOINT"] = resolved_endpoint
+        if api_key:
+            os.environ["AZURE_OPENAI_API_KEY"] = api_key
+        return AzureOpenAIChatClient(credential=AzureCliCredential()), model_id
+    return KaitoChatClient(
+        endpoint=resolved_endpoint,
+        api_key=api_key or None,
+        default_model=model_id,
+    ), model_id
+
+
 def _coerce_photo_payload(result: object) -> tuple[PhotoSubmissionStructuredOutput, dict]:
     parsed = getattr(result, "parsed", None)
     if isinstance(parsed, PhotoSubmissionStructuredOutput):
@@ -1098,7 +1156,7 @@ def _fitness_chat_model(selected_model: str | None) -> str:
     return selected_model or _clean_env(os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "gpt-5.2-chat"))
 
 
-def _build_fitness_runtime(user_id: str, selected_model: str | None) -> tuple[ChatAgent, object, str, str]:
+def _build_fitness_runtime(user_id: str, selected_model: str | None, chat_client=None) -> tuple[ChatAgent, object, str, str]:
     repo = get_fitness_repository(_fitness_db_path())
     session_key = f"fitness:{user_id}"
     agent_name = "fitness_agent"
@@ -1106,8 +1164,14 @@ def _build_fitness_runtime(user_id: str, selected_model: str | None) -> tuple[Ch
         "You are a fitness nutrition assistant with access to user profile, body metrics, and meal macro history. "
         "When users ask about goals or trends, use tracked data first and ask clarifying questions if missing data."
     )
-    chat_client = AzureOpenAIChatClient(credential=AzureCliCredential())
-    context_provider = DatabaseContextProvider(repo, user_id=user_id, meal_limit=6)
+    if chat_client is None:
+        chat_client = AzureOpenAIChatClient(credential=AzureCliCredential())
+    # Small-context models (phi family) need tighter limits to stay under their token ceiling.
+    _model_lower = (selected_model or "").lower()
+    _small_context = "phi" in _model_lower
+    meal_limit = 2 if _small_context else 6
+    metric_limit = 2 if _small_context else 5
+    context_provider = DatabaseContextProvider(repo, user_id=user_id, meal_limit=meal_limit, metric_limit=metric_limit)
     agent = ChatAgent(
         chat_client=chat_client,
         instructions=instructions,
@@ -1128,13 +1192,17 @@ async def _run_fitness_turn(
     selected_model: str | None,
     image_bytes: bytes | None,
     image_name: str | None,
+    chat_client=None,
 ) -> tuple[str, str]:
-    agent, repo, session_key, agent_name = _build_fitness_runtime(user_id, selected_model)
+    agent, repo, session_key, agent_name = _build_fitness_runtime(user_id, selected_model, chat_client=chat_client)
     _append_memory_debug_event(
         "run_start",
         f"user_id={user_id} session_key={session_key} model={_fitness_chat_model(selected_model)}",
     )
-    saved_state = repo.load_thread_state(user_id=user_id, session_key=session_key, agent_name=agent_name)
+    # Small-context models start a fresh thread each turn to avoid accumulated history
+    # overflowing their token limit. Durable fitness memory still comes via DatabaseContextProvider.
+    _small_context = "phi" in (selected_model or "").lower()
+    saved_state = None if _small_context else repo.load_thread_state(user_id=user_id, session_key=session_key, agent_name=agent_name)
     if saved_state:
         try:
             thread = await _resolve_maybe_awaitable(agent.deserialize_thread(saved_state))
@@ -1147,6 +1215,13 @@ async def _run_fitness_turn(
         _append_memory_debug_event("thread_restore", "no prior state, created new thread")
 
     usage_summary = ""
+    if image_bytes is not None and _small_context:
+        # phi-family models on KAITO are text-only deployments — vision is not supported.
+        return (
+            "⚠️ The selected model (**phi-4**) does not support image inputs. "
+            "Please switch to an AI Foundry model (e.g. gpt-5.2-chat) to analyse meal photos.",
+            "",
+        )
     if image_bytes is not None:
         mime_type, _ = mimetypes.guess_type(image_name or "")
         mime_type = mime_type or "application/octet-stream"
@@ -1189,39 +1264,45 @@ async def _run_fitness_turn(
                 DataContent(data=image_bytes, media_type=mime_type),
             ],
         )
-        try:
-            extraction_result = await run_with_retry(
-                agent,
-                extraction_message,
-                response_format=PhotoSubmissionStructuredOutput,
-            )
-            payload, raw_output = _coerce_photo_payload(extraction_result)
-            raw_output = _ensure_macro_events_in_output(raw_output)
-            payload = PhotoSubmissionStructuredOutput.model_validate(raw_output)
-            file_hint = image_name or "uploaded-image"
-            idempotency_key = extract_idempotency_key(payload, image_bytes, user_id)
-            repo.apply_photo_submission(
-                user_id=user_id,
-                image_path=file_hint,
-                payload=payload,
-                raw_structured_output=raw_output,
-                idempotency_key=idempotency_key,
-            )
-            _append_memory_debug_event(
-                "photo_persist",
-                f"saved meal photo submission image={file_hint} profile_updates={len(payload.profile_updates)} body_metrics={len(payload.body_metric_events_insert)}",
-            )
-        except Exception:
-            logger.exception("Could not persist photo extraction memory")
-            _append_memory_debug_event("photo_persist", "failed to persist photo extraction")
+        if _small_context:
+            _append_memory_debug_event("photo_persist", "skipped: model does not support structured output")
+        else:
+            try:
+                extraction_result = await run_with_retry(
+                    agent,
+                    extraction_message,
+                    response_format=PhotoSubmissionStructuredOutput,
+                )
+                payload, raw_output = _coerce_photo_payload(extraction_result)
+                raw_output = _ensure_macro_events_in_output(raw_output)
+                payload = PhotoSubmissionStructuredOutput.model_validate(raw_output)
+                file_hint = image_name or "uploaded-image"
+                idempotency_key = extract_idempotency_key(payload, image_bytes, user_id)
+                repo.apply_photo_submission(
+                    user_id=user_id,
+                    image_path=file_hint,
+                    payload=payload,
+                    raw_structured_output=raw_output,
+                    idempotency_key=idempotency_key,
+                )
+                _append_memory_debug_event(
+                    "photo_persist",
+                    f"saved meal photo submission image={file_hint} profile_updates={len(payload.profile_updates)} body_metrics={len(payload.body_metric_events_insert)}",
+                )
+            except Exception:
+                logger.exception("Could not persist photo extraction memory")
+                _append_memory_debug_event("photo_persist", "failed to persist photo extraction")
 
-        await _persist_text_turn_memory(
-            agent=agent,
-            repo=repo,
-            user_id=user_id,
-            user_text=user_prompt,
-            assistant_text=content,
-        )
+        if not _small_context:
+            await _persist_text_turn_memory(
+                agent=agent,
+                repo=repo,
+                user_id=user_id,
+                user_text=user_prompt,
+                assistant_text=content,
+            )
+        else:
+            _append_memory_debug_event("text_persist", "skipped: model does not support structured output")
     else:
         result = await run_with_retry(agent, user_prompt, thread=thread)
         content = _extract_display_text(getattr(result, "text", None) or str(result))
@@ -1233,13 +1314,16 @@ async def _run_fitness_turn(
                 f"total={usage.total_token_count or 0}"
             )
 
-        await _persist_text_turn_memory(
-            agent=agent,
-            repo=repo,
-            user_id=user_id,
-            user_text=user_prompt,
-            assistant_text=content,
-        )
+        if not _small_context:
+            await _persist_text_turn_memory(
+                agent=agent,
+                repo=repo,
+                user_id=user_id,
+                user_text=user_prompt,
+                assistant_text=content,
+            )
+        else:
+            _append_memory_debug_event("text_persist", "skipped: model does not support structured output")
 
     try:
         resolved_thread = await _resolve_maybe_awaitable(thread)
@@ -1412,11 +1496,13 @@ with st.sidebar:
     if agent_model and agent_model not in models:
         models.append(agent_model)
 
-    model_default = agent_model or (models[0] if models else "")
+    # Merge agent-level extra_models into the dropdown (e.g. Fitness Nutrition adds phi-4)
+    for _em in agent_config.get("extra_models", []):
+        _em = _clean_env(str(_em))
+        if _em and _em not in models:
+            models.append(_em)
 
-    endpoint = st.text_input("Endpoint", endpoint, help="Base endpoint or full /v1/chat/completions URL")
-    if api_key_env:
-        api_key = st.text_input("API Key", api_key, type="password")
+    model_default = agent_model or (models[0] if models else "")
     model_options = models or [model_default]
     model_key = "model_select"
     saved_models = ui_prefs.get("model_by_agent")
@@ -1454,7 +1540,7 @@ with st.sidebar:
         if not _is_running_in_kubernetes():
             st.warning(
                 "This endpoint uses Kubernetes cluster-local DNS (*.svc.cluster.local) and is not reachable from this runtime. "
-                "Use `kubectl port-forward` and set Endpoint to a localhost URL such as "
+                "Use `kubectl port-forward` and configure a localhost URL such as "
                 "`http://127.0.0.1:8000/v1/chat/completions`."
             )
 
@@ -1636,7 +1722,6 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
                 "city",
                 "country",
                 "timezone",
-                "external_user_key",
             ]
 
             def _display_or_na(value: object) -> str:
@@ -1722,7 +1807,9 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
             st.caption("No image attached.")
 
         st.divider()
-        st.markdown("**Long-term memory (SQLite)**")
+        memory_backend = os.getenv("FITNESS_DB_BACKEND", "sqlite").strip().lower()
+        memory_backend_label = "Azure SQL" if memory_backend in {"azuresql", "azure_sql", "azure-sql"} else "SQLite"
+        st.markdown(f"**Long-term memory ({memory_backend_label})**")
         try:
             if meals:
                 st.caption("Last 6 meals and macros")
@@ -1828,7 +1915,7 @@ with chat_col:
 
     prompt = st.chat_input("Ask something...", key=chat_input_key)
     if prompt:
-        logger.info("User prompt received. Agent=%s Endpoint=%s Model=%s", agent_choice, provider_name, model)
+        logger.info("User prompt received. Agent=%s Provider=%s Model=%s", agent_choice, provider_name, model)
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -1842,9 +1929,10 @@ with chat_col:
             turn_debug_logs: list[str] = []
 
             def _add_turn_debug(line: str) -> None:
-                stamped = f"[{datetime.now(ZoneInfo(_browser_timezone_name())).strftime('%H:%M:%S')}] {line}"
+                safe_line = _redact_sensitive_text(line)
+                stamped = f"[{datetime.now(ZoneInfo(_browser_timezone_name())).strftime('%H:%M:%S')}] {safe_line}"
                 turn_debug_logs.append(stamped)
-                logger.info("TURN_DEBUG %s", line)
+                logger.info("TURN_DEBUG %s", safe_line)
 
             _add_turn_debug(
                 f"request_start agent={agent_choice} provider={provider_name or '-'} model={model or '-'}"
@@ -1984,14 +2072,25 @@ with chat_col:
                 else:
                     logger.info("Running Fitness Nutrition agent")
                     fitness_user_id = _normalize_user_id(st.session_state.get("fitness_user_name", "roy"))
+                    # Route to the right backend based on the model chosen in the sidebar dropdown.
+                    # model_backends in config.yaml maps model names to provider names.
+                    _fit_agent_cfg = next((a for a in AGENTS if a.get("name") == "Fitness Nutrition"), {})
+                    _model_backends = _fit_agent_cfg.get("model_backends", {})
+                    _backend_provider_name = _model_backends.get(model) if isinstance(_model_backends, dict) else None
+                    if _backend_provider_name:
+                        _backend_cfg = {"provider": _backend_provider_name, "model": model}
+                        fitness_chat_client, fitness_model = _build_fitness_chat_client(_backend_cfg, PROVIDERS)
+                    else:
+                        fitness_chat_client, fitness_model = None, model
                     fitness_started = time.perf_counter()
                     content, usage_summary = asyncio.run(
                         _run_fitness_turn(
                             user_prompt=prompt,
                             user_id=fitness_user_id,
-                            selected_model=model,
+                            selected_model=fitness_model or model,
                             image_bytes=uploaded_food_image_bytes,
                             image_name=uploaded_food_image_name,
+                            chat_client=fitness_chat_client,
                         )
                     )
                     fitness_elapsed = time.perf_counter() - fitness_started
@@ -2036,8 +2135,10 @@ with chat_col:
             except urllib.error.HTTPError as exc:
                 status = f"http-{exc.code}"
                 error_body = exc.read().decode("utf-8") if exc.fp else ""
-                logger.error("HTTP error: %s %s %s", exc.code, exc.reason, error_body)
-                error_message = f"Request failed: {exc.code} {exc.reason}\n{error_body}"
+                safe_reason = _redact_sensitive_text(exc.reason)
+                safe_body = _redact_sensitive_text(error_body)
+                logger.error("HTTP error: %s %s %s", exc.code, safe_reason, safe_body)
+                error_message = f"Request failed: {exc.code} {safe_reason}\n{safe_body}"
                 _add_turn_debug(f"error type=http code={exc.code} reason={exc.reason}")
                 st.error(error_message)
                 st.session_state.messages.append(
@@ -2049,8 +2150,9 @@ with chat_col:
                 )
             except urllib.error.URLError as exc:
                 status = "url-error"
-                logger.error("URL error: %s", exc.reason)
-                error_message = f"Request failed: {exc.reason}"
+                safe_reason = _redact_sensitive_text(exc.reason)
+                logger.error("URL error: %s", safe_reason)
+                error_message = f"Request failed: {safe_reason}"
                 _add_turn_debug(f"error type=url reason={exc.reason}")
                 st.error(error_message)
                 st.session_state.messages.append(
@@ -2062,8 +2164,9 @@ with chat_col:
                 )
             except Exception as exc:
                 status = "error"
-                logger.exception("Unhandled error: %s", exc)
-                error_message = f"Request failed: {exc}"
+                safe_exc = _redact_sensitive_text(exc)
+                logger.exception("Unhandled error: %s", safe_exc)
+                error_message = f"Request failed: {safe_exc}"
                 _add_turn_debug(f"error type=exception class={type(exc).__name__} detail={exc}")
                 st.error(error_message)
                 st.session_state.messages.append(
@@ -2079,14 +2182,14 @@ with chat_col:
                 if debug_enabled:
                     _add_turn_debug(f"request_end status={status} total_latency_s={elapsed_s:.2f}")
                 metrics_line = (
-                    f"agent={agent_choice} | endpoint={provider_name or '-'} | model={model or '-'} | "
+                    f"agent={agent_choice} | provider={provider_name or '-'} | model={model or '-'} | "
                     f"status={status} | latency_s={elapsed_s:.2f} | "
                     f"breakdown_s=init:{agent_init_elapsed:.2f},llm:{model_call_elapsed:.2f},post:{post_elapsed:.2f}"
                 )
                 if usage_summary:
                     metrics_line = f"{metrics_line} | {usage_summary}"
                 st.session_state.metrics_log.append(metrics_line)
-                logger.info("Completion: %s", metrics_line)
+                logger.info("Completion: %s", _redact_sensitive_text(metrics_line))
                 if not st.session_state._metrics_rerun:
                     st.session_state._metrics_rerun = True
                     st.rerun()

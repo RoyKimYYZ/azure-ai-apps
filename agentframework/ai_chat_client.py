@@ -17,6 +17,7 @@ from agent_framework import (
     ChatOptions,
     ChatResponse,
     ChatResponseUpdate,
+    DataContent,
     FinishReason,
     TextContent,
     UsageDetails,
@@ -208,12 +209,22 @@ class KaitoChatClient(BaseChatClient):
     ) -> ChatResponse:
         payload_messages: list[dict[str, Any]] = []
         for message in messages:
-            payload_messages.append(
-                {
-                    "role": message.role.value if hasattr(message.role, "value") else str(message.role),
-                    "content": message.text,
-                }
-            )
+            role = message.role.value if hasattr(message.role, "value") else str(message.role)
+            # Check whether this message carries any image data.
+            contents = getattr(message, "contents", None) or []
+            image_parts = [c for c in contents if isinstance(c, DataContent)]
+            if image_parts:
+                # Build OpenAI vision array-content format.
+                parts: list[dict[str, Any]] = []
+                text_part = message.text
+                if text_part:
+                    parts.append({"type": "text", "text": text_part})
+                for img in image_parts:
+                    # img.uri is already a data URI: "data:{media_type};base64,{b64}"
+                    parts.append({"type": "image_url", "image_url": {"url": img.uri}})
+                payload_messages.append({"role": role, "content": parts})
+            else:
+                payload_messages.append({"role": role, "content": message.text})
 
         extra_body: dict[str, Any] = dict(self._extra_payload)
         if chat_options.temperature is not None:

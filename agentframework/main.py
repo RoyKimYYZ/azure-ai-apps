@@ -10,7 +10,7 @@ from azure.identity import AzureCliCredential
 from dotenv import load_dotenv
 from jinja2 import Template
 
-from config import Settings
+from app_settings import Settings
 from ai_chat_client import KaitoChatClient
 from run_utils import run_with_retry
 from logging_colors import ColorLogFormatter, strip_ansi, supports_color

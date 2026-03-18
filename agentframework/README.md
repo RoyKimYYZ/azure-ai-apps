@@ -101,11 +101,45 @@ cp .env-sample .env
 #   KAITO_RAGENGINE_ENDPOINT (e.g., http://ragengine-example.default.svc.cluster.local:80)
 ```
 
+#### Choose the durable memory database backend
+
+The fitness agent can use either local SQLite or Azure SQL for durable memory.
+
+**SQLite (default local development)**
+
+```bash
+FITNESS_DB_BACKEND="sqlite"
+FITNESS_DB_PATH="agentframework.db"
+```
+
+- Uses the local project database file.
+- Best for local development and quick testing.
+
+**Azure SQL**
+
+```bash
+FITNESS_DB_BACKEND="azuresql"
+AZURE_SQL_SERVER="<logical-server-name>.database.windows.net"
+AZURE_SQL_DATABASE="<database-name>"
+AZURE_SQL_SCHEMA="dbo"
+AZURE_SQL_DRIVER="ODBC Driver 18 for SQL Server"
+AZURE_SQL_AUTH_MODE="defaultazurecredential"
+AZURE_SQL_ENCRYPT="true"
+AZURE_SQL_TRUST_SERVER_CERTIFICATE="false"
+AZURE_SQL_CONNECTION_TIMEOUT="30"
+```
+
+- Uses Microsoft Entra auth through `DefaultAzureCredential`.
+- Requires Azure login, Azure SQL access, and the ODBC runtime/driver on the machine.
+- See [sql/README.md](sql/README.md) for Azure SQL schema creation and data migration steps.
+
 ### 3. Initialize Starter Database (first-time setup)
 
 ```bash
 cp sample-db/agentframework-starter.db agentframework.db
 ```
+
+Only needed when using `FITNESS_DB_BACKEND="sqlite"`. Skip this step when using Azure SQL.
 
 ### 4. Run Locally
 

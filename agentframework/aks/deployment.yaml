@@ -22,7 +22,6 @@ spec:
             - "chatbot/chatbot.py"
             - "--server.address=0.0.0.0"
             - "--server.port=8501"
-            - "--server.baseUrlPath=agentframework-chatbot"
           ports:
             - containerPort: 8501
           envFrom:
@@ -39,13 +38,13 @@ spec:
               memory: "1Gi"
           readinessProbe:
             httpGet:
-              path: /agentframework-chatbot/_stcore/health
+              path: /_stcore/health
               port: 8501
             initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /agentframework-chatbot/_stcore/health
+              path: /_stcore/health
               port: 8501
             initialDelaySeconds: 30
             periodSeconds: 20

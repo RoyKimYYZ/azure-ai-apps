@@ -3,5 +3,18 @@ kind: Ingress
 metadata:
   name: agentframework-chatbot
 spec:
+  tls:
+    - hosts:
+        - ai.roykim.ca
+      secretName: agentframework-chatbot-tls
   rules:
-    - host: 4.239.205.137
+    - host: ai.roykim.ca
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: agentframework-chatbot
+                port:
+                  number: 80

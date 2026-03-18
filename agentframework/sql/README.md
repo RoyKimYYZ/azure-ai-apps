@@ -1,11 +1,14 @@
-# SQLite Database Guide (agentframework)
+# Database Guide (agentframework)
 
-This guide covers how to prepare, manage, verify, and troubleshoot the SQLite database used by the fitness memory schema.
+This guide covers both the local SQLite database used today and the Azure SQL artifacts used for schema creation and migration.
 
 ## Files
 
 - `001_fitness_memory_sqlite.sql` — SQLite migration script
 - `001_fitness_memory_azuresql.sql` — Azure SQL-compatible version of the same schema
+- `002_structured_outputs_azuresql.sql` — Azure SQL schema for `structured_outputs`
+- `create_azure_sql_db.sh` — Azure CLI script to create an Azure SQL database
+- `migrate_sqlite_to_azure_sql.py` — SQLite to Azure SQL migration utility
 - `../agentframework.db` — local app database
 - `../sample-db/agentframework-template.db` — sample pre-created template database
 
@@ -21,6 +24,35 @@ Check installation:
 ```bash
 sqlite3 --version
 ```
+
+## Choose the active database backend
+
+Set the durable memory backend in [.env-sample](.env-sample) / `.env` with `FITNESS_DB_BACKEND`.
+
+### SQLite mode
+
+```bash
+FITNESS_DB_BACKEND="sqlite"
+FITNESS_DB_PATH="agentframework.db"
+```
+
+Use this for local development with the project-local SQLite file.
+
+### Azure SQL mode
+
+```bash
+FITNESS_DB_BACKEND="azuresql"
+AZURE_SQL_SERVER="<logical-server-name>.database.windows.net"
+AZURE_SQL_DATABASE="<database-name>"
+AZURE_SQL_SCHEMA="dbo"
+AZURE_SQL_DRIVER="ODBC Driver 18 for SQL Server"
+AZURE_SQL_AUTH_MODE="defaultazurecredential"
+AZURE_SQL_ENCRYPT="true"
+AZURE_SQL_TRUST_SERVER_CERTIFICATE="false"
+AZURE_SQL_CONNECTION_TIMEOUT="30"
+```
+
+Use this when the fitness durable memory should connect to Azure SQL instead of SQLite.
 
 ## Prepare a Local Database
 
@@ -127,6 +159,94 @@ sqlite3 sample-db/agentframework-template.db < sql/001_fitness_memory_sqlite.sql
 sqlite3 sample-db/agentframework-template.db ".tables"
 ```
 
+## Azure SQL Prerequisites
+
+- Azure CLI installed and logged in
+- Microsoft Entra ID access to the target Azure SQL server/database
+- Microsoft ODBC Driver 18 for SQL Server installed on the machine running the migration script
+- Python dependencies installed from `pyproject.toml`
+
+Optional environment variables from [../.env-sample](../.env-sample):
+
+- `AZURE_SQL_ADMIN_USER`
+- `AZURE_SQL_ADMIN_PASSWORD`
+- `AZURE_SQL_SERVER`
+- `AZURE_SQL_DATABASE`
+- `AZURE_SQL_SCHEMA`
+- `AZURE_SQL_DRIVER`
+- `AZURE_SQL_RESOURCE_GROUP`
+- `AZURE_SQL_LOCATION`
+- `AZURE_SQL_ENTRA_ADMIN_NAME`
+- `AZURE_SQL_ENTRA_ADMIN_OBJECT_ID`
+
+## Create an Azure SQL Database
+
+From `agentframework/`:
+
+```bash
+bash sql/create_azure_sql_db.sh \
+  --resource-group <resource-group> \
+  --server <logical-server-name> \
+  --database <database-name>
+```
+
+If the logical server does not exist yet, the same script can create it:
+
+```bash
+bash sql/create_azure_sql_db.sh \
+  --resource-group <resource-group> \
+  --location <azure-region> \
+  --server <logical-server-name> \
+  --database <database-name> \
+  --create-server \
+  --sql-admin-user <temporary-sql-admin-user> \
+  --sql-admin-password '<temporary-sql-admin-password>' \
+  --entra-admin-name '<entra-admin-display-name>' \
+  --entra-admin-object-id '<entra-admin-object-id>'
+```
+
+## Apply the Azure SQL Schema
+
+Apply both schema files in order against the target Azure SQL database:
+
+1. `sql/001_fitness_memory_azuresql.sql`
+2. `sql/002_structured_outputs_azuresql.sql`
+
+The first file creates the fitness-memory tables:
+
+- `users`
+- `body_metric_events`
+- `meal_events`
+- `agent_session_memory`
+- `ingestion_runs`
+
+The second file creates:
+
+- `structured_outputs`
+
+## Migrate Data from SQLite to Azure SQL
+
+From `agentframework/`:
+
+```bash
+uv run python sql/migrate_sqlite_to_azure_sql.py \
+  --sqlite-db agentframework.db \
+  --sql-server <logical-server-name> \
+  --sql-database <database-name>
+```
+
+To perform a full refresh of the target tables before inserting data:
+
+```bash
+uv run python sql/migrate_sqlite_to_azure_sql.py \
+  --sqlite-db agentframework.db \
+  --sql-server <logical-server-name> \
+  --sql-database <database-name> \
+  --truncate-target
+```
+
+Migration order is dependency-safe and includes the shared `structured_outputs` table.
+
 ## Troubleshooting
 
 ### 1) `sqlite3: command not found`
@@ -164,6 +284,20 @@ Common cases:
 SQLite enforces FKs per connection.
 
 - Ensure your app/CLI session executes `PRAGMA foreign_keys = ON;`
+
+### 6) Azure SQL migration fails with ODBC driver errors
+
+Install Microsoft ODBC Driver 18 for SQL Server, then re-run the migration utility.
+
+Typical Linux package name:
+
+- `msodbcsql18`
+
+### 7) Azure SQL migration fails with authentication errors
+
+- Confirm `az login` completed with the correct tenant/account
+- Confirm the signed-in identity has access to the target database
+- Confirm the target SQL server has a Microsoft Entra administrator configured
 
 ## Minimal Smoke Test
 
