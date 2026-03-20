@@ -639,10 +639,11 @@ def _build_kaito_ragengine_agent(model: str, index_name: str | None = None) -> C
 def _build_fitness_chat_client(backend_cfg: dict, providers: list[dict]):
     """Return (chat_client, model_id) for a Fitness Nutrition backend config entry."""
     provider_name = backend_cfg.get("provider", "AI Foundry")
-    model_id = backend_cfg.get("model", "")
+    display_model = backend_cfg.get("model", "")
     provider_cfg = next((p for p in providers if p.get("name") == provider_name), {})
-    if not model_id:
-        model_id = provider_cfg.get("default_model", "")
+    if not display_model:
+        display_model = provider_cfg.get("default_model", "")
+    model_id = provider_cfg.get("request_model") or display_model
 
     endpoint_env = provider_cfg.get("endpoint_env")
     endpoint_default = provider_cfg.get("default_endpoint", "")
@@ -1139,6 +1140,17 @@ def _fitness_chat_model(selected_model: str | None) -> str:
     return selected_model or _clean_env(os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "gpt-5.2-chat"))
 
 
+def _is_small_context_model(selected_model: str | None) -> bool:
+    return "phi" in (selected_model or "").lower()
+
+
+def _supports_image_inputs(selected_model: str | None) -> bool:
+    model_lower = (selected_model or "").lower()
+    if "phi" in model_lower:
+        return "vision" in model_lower
+    return True
+
+
 def _build_fitness_runtime(user_id: str, selected_model: str | None, chat_client=None) -> tuple[ChatAgent, object, str, str]:
     repo = get_fitness_repository(_fitness_db_path())
     session_key = f"fitness:{user_id}"
@@ -1150,8 +1162,7 @@ def _build_fitness_runtime(user_id: str, selected_model: str | None, chat_client
     if chat_client is None:
         chat_client = AzureOpenAIChatClient(credential=AzureCliCredential())
     # Small-context models (phi family) need tighter limits to stay under their token ceiling.
-    _model_lower = (selected_model or "").lower()
-    _small_context = "phi" in _model_lower
+    _small_context = _is_small_context_model(selected_model)
     meal_limit = 2 if _small_context else 6
     metric_limit = 2 if _small_context else 5
     context_provider = DatabaseContextProvider(repo, user_id=user_id, meal_limit=meal_limit, metric_limit=metric_limit)
@@ -1184,7 +1195,7 @@ async def _run_fitness_turn(
     )
     # Small-context models start a fresh thread each turn to avoid accumulated history
     # overflowing their token limit. Durable fitness memory still comes via DatabaseContextProvider.
-    _small_context = "phi" in (selected_model or "").lower()
+    _small_context = _is_small_context_model(selected_model)
     saved_state = None if _small_context else repo.load_thread_state(user_id=user_id, session_key=session_key, agent_name=agent_name)
     if saved_state:
         try:
@@ -1198,10 +1209,9 @@ async def _run_fitness_turn(
         _append_memory_debug_event("thread_restore", "no prior state, created new thread")
 
     usage_summary = ""
-    if image_bytes is not None and _small_context:
-        # phi-family models on KAITO are text-only deployments — vision is not supported.
+    if image_bytes is not None and not _supports_image_inputs(selected_model):
         return (
-            "⚠️ The selected model (**phi-4**) does not support image inputs. "
+            f"⚠️ The selected model (**{_fitness_chat_model(selected_model)}**) does not support image inputs. "
             "Please switch to an AI Foundry model (e.g. gpt-5.2-chat) to analyse meal photos.",
             "",
         )
@@ -1854,7 +1864,7 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
                 }
                 st.text_area(
                     "read_model_json",
-                    value=json.dumps(debug_read_model, indent=2, ensure_ascii=False),
+                    value=json.dumps(debug_read_model, indent=2, ensure_ascii=False, default=str),
                     height=220,
                     disabled=True,
                     key="memory_debug_read_model_json",

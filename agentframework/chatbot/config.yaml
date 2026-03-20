@@ -28,11 +28,17 @@ providers:
     embedding_model: BAAI/bge-small-en-v1.5
 
   - name: KAITO phi-4
-    endpoint_env: KAITO_PHI4_ENDPOINT
     # api_key_env omitted – no auth on public ingress path
     models_env: [phi-4]
     default_endpoint: https://ai.roykim.ca/phi4
     default_model: phi-4
+
+  - name: KAITO phi3.5 vision
+    # api_key_env omitted – no auth on public ingress path
+    models_env: [phi3.5 vision]
+    default_endpoint: https://ai.roykim.ca/phi35vision
+    default_model: phi3.5 vision
+    request_model: microsoft/Phi-3.5-vision-instruct
 
 agents:
   - name: General Chat Assistant
@@ -48,9 +54,10 @@ agents:
     provider: AI Foundry
     # extra_models are merged into the sidebar Model dropdown for this agent.
     # model_backends maps a model name to the provider that serves it.
-    extra_models: [phi-4]
+    extra_models: [phi-4, phi3.5 vision]
     model_backends:
       phi-4: KAITO phi-4
+      phi3.5 vision: KAITO phi3.5 vision
   - name: Agent1 Demo
     provider: AI Foundry
 

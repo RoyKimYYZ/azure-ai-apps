@@ -1260,9 +1260,9 @@ class DatabaseContextProvider(ContextProvider):
         _STRIP_MEAL_KEYS = {"llm_structured_output_json", "source_image_uri", "source_hash"}
         meals_slim = [{k: v for k, v in m.items() if k not in _STRIP_MEAL_KEYS} for m in meals]
 
-        profile_text = json.dumps(profile, ensure_ascii=False)
-        metrics_text = json.dumps(metrics, ensure_ascii=False)
-        meals_text = json.dumps(meals_slim, ensure_ascii=False)
+        profile_text = _to_json_text(profile)
+        metrics_text = _to_json_text(metrics)
+        meals_text = _to_json_text(meals_slim)
         instructions = (
             f"{self.DEFAULT_CONTEXT_PROMPT}\n"
             "Use this durable fitness memory context when responding.\n"

@@ -2,6 +2,6 @@
   "agent_choice": "Fitness Nutrition",
   "model_by_agent": {
     "Agent1 Demo": "gpt-5-mini",
-    "Fitness Nutrition": "gpt-5.2-chat"
+    "Fitness Nutrition": "phi3.5 vision"
   }
 }
