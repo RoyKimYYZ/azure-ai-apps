@@ -52,11 +52,17 @@ agents:
     model: phi-4-mini-instruct
   - name: Fitness Nutrition
     provider: AI Foundry
-    # extra_models are merged into the sidebar Model dropdown for this agent.
-    # model_backends maps a model name to the provider that serves it.
-    extra_models: [phi-4, phi3.5 vision]
+    # available_providers drives the "AI Provider" selectbox in the sidebar.
+    # Each entry lists the models shown when that provider is selected.
+    available_providers:
+      - name: AI Foundry
+      - name: AKS KAITO
+        models: [phi-4, phi-4-mini-instruct, phi3.5 vision]
+    # model_backends maps a model name to the config-level provider that serves it.
+    extra_models: [phi-4, phi-4-mini-instruct, phi3.5 vision]
     model_backends:
       phi-4: KAITO phi-4
+      phi-4-mini-instruct: KAITO
       phi3.5 vision: KAITO phi3.5 vision
   - name: Agent1 Demo
     provider: AI Foundry

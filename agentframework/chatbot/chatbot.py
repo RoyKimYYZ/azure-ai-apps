@@ -1340,8 +1340,6 @@ async def _run_fitness_turn(
 
 st.set_page_config(page_title="AI Foundry Chatbot", page_icon="🤖", layout="wide")
 
-st.title("AI Foundry Chatbot")
-
 st.markdown(
         """
 <style>
@@ -1458,13 +1456,78 @@ with st.sidebar:
         _save_ui_prefs(ui_prefs)
 
     agent_config = next((agent for agent in AGENTS if agent.get("name") == agent_choice), {})
-    provider_name = agent_config.get("provider")
-    provider_config = next((p for p in PROVIDERS if p.get("name") == provider_name), {})
-    if not provider_config and PROVIDERS:
-        provider_config = PROVIDERS[0]
-        provider_name = provider_config.get("name")
+    available_providers = agent_config.get("available_providers", [])
+    agent_model = agent_config.get("model")
 
-    st.text_input("Provider", provider_name or "", disabled=True)
+    # --- AI Provider selector (hierarchical) or simple display ---
+    if available_providers:
+        _ap_names = [ap.get("name", "") for ap in available_providers if ap.get("name")]
+        _saved_ap = ui_prefs.get("ai_provider_by_agent", {}).get(agent_choice)
+        _ap_default_idx = _ap_names.index(_saved_ap) if isinstance(_saved_ap, str) and _saved_ap in _ap_names else 0
+        selected_ai_provider = st.selectbox("AI Provider", _ap_names, index=_ap_default_idx, key="ai_provider_select")
+        # persist choice
+        _ap_prefs = ui_prefs.get("ai_provider_by_agent")
+        if not isinstance(_ap_prefs, dict):
+            _ap_prefs = {}
+        if _ap_prefs.get(agent_choice) != selected_ai_provider:
+            _ap_prefs[agent_choice] = selected_ai_provider
+            ui_prefs["ai_provider_by_agent"] = _ap_prefs
+            _save_ui_prefs(ui_prefs)
+
+        _ap_entry = next((ap for ap in available_providers if ap.get("name") == selected_ai_provider), {})
+        _ap_models = _ap_entry.get("models")
+
+        # Resolve to the config-level provider for endpoint/key lookup
+        provider_name = selected_ai_provider if selected_ai_provider != "AKS KAITO" else agent_config.get("provider", "AI Foundry")
+        provider_config = next((p for p in PROVIDERS if p.get("name") == provider_name), {})
+        if not provider_config and PROVIDERS:
+            provider_config = PROVIDERS[0]
+            provider_name = provider_config.get("name")
+
+        # When the available_providers entry lists explicit models, use them;
+        # otherwise fall back to the provider-level models list.
+        if isinstance(_ap_models, list) and _ap_models:
+            models = _split_models(_ap_models)
+        else:
+            models_env = provider_config.get("models_env")
+            if isinstance(models_env, list):
+                models = _split_models(models_env)
+            else:
+                models = _split_models(os.getenv(models_env)) if models_env else []
+            model_env = provider_config.get("model_env")
+            provider_default_model = provider_config.get("default_model", "")
+            if not models:
+                model_fallback = _clean_env(os.getenv(model_env, provider_default_model)) if model_env else provider_default_model
+                models = [m for m in [model_fallback] if m]
+    else:
+        provider_name = agent_config.get("provider")
+        provider_config = next((p for p in PROVIDERS if p.get("name") == provider_name), {})
+        if not provider_config and PROVIDERS:
+            provider_config = PROVIDERS[0]
+            provider_name = provider_config.get("name")
+
+        st.text_input("Provider", provider_name or "", disabled=True)
+
+        models_env = provider_config.get("models_env")
+        if isinstance(models_env, list):
+            models = _split_models(models_env)
+        else:
+            models = _split_models(os.getenv(models_env)) if models_env else []
+
+        model_env = provider_config.get("model_env")
+        provider_default_model = provider_config.get("default_model", "")
+        if not models:
+            model_fallback = _clean_env(os.getenv(model_env, provider_default_model)) if model_env else provider_default_model
+            models = [model for model in [model_fallback] if model]
+
+        if agent_model and agent_model not in models:
+            models.append(agent_model)
+
+        # Merge agent-level extra_models into the dropdown
+        for _em in agent_config.get("extra_models", []):
+            _em = _clean_env(str(_em))
+            if _em and _em not in models:
+                models.append(_em)
 
     endpoint_env = provider_config.get("endpoint_env")
     endpoint_default = provider_config.get("default_endpoint", "")
@@ -1472,28 +1535,6 @@ with st.sidebar:
 
     api_key_env = provider_config.get("api_key_env")
     api_key = _clean_env(os.getenv(api_key_env)) if api_key_env else ""
-
-    models_env = provider_config.get("models_env")
-    if isinstance(models_env, list):
-        models = _split_models(models_env)
-    else:
-        models = _split_models(os.getenv(models_env)) if models_env else []
-
-    model_env = provider_config.get("model_env")
-    provider_default_model = provider_config.get("default_model", "")
-    if not models:
-        model_fallback = _clean_env(os.getenv(model_env, provider_default_model)) if model_env else provider_default_model
-        models = [model for model in [model_fallback] if model]
-
-    agent_model = agent_config.get("model")
-    if agent_model and agent_model not in models:
-        models.append(agent_model)
-
-    # Merge agent-level extra_models into the dropdown (e.g. Fitness Nutrition adds phi-4)
-    for _em in agent_config.get("extra_models", []):
-        _em = _clean_env(str(_em))
-        if _em and _em not in models:
-            models.append(_em)
 
     model_default = agent_model or (models[0] if models else "")
     model_options = models or [model_default]
