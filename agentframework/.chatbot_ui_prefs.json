@@ -5,7 +5,7 @@
   },
   "model_by_agent": {
     "Agent1 Demo": "gpt-5-mini",
-    "Fitness Nutrition": "DeepSeek-V3.2",
+    "Fitness Nutrition": "gpt-5-mini",
     "General Chat Assistant": "gpt-5.2-chat"
   }
 }

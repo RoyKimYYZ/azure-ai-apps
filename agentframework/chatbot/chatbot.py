@@ -102,6 +102,13 @@ from fitness_memory import (
 )
 from main import agent1, azure_foundry_general_agent, load_prompt_template, render_instructions
 from run_utils import run_with_retry
+from diagnostics_store import (
+    DiagnosticsTurn,
+    record_turn as _diag_record_turn,
+    record_log as _diag_record_log,
+    get_context_window_size as _diag_ctx_size,
+    estimate_tokens as _diag_est_tokens,
+)
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
 
@@ -1343,6 +1350,7 @@ st.set_page_config(page_title="AI Foundry Chatbot", page_icon="🤖", layout="wi
 st.markdown(
         """
 <style>
+[data-testid="stSidebarNav"] {display: none !important;}
 div[data-testid="stAppViewContainer"] div.block-container {
     max-width: 98%;
     padding-left: 1rem;
@@ -1587,6 +1595,16 @@ with st.sidebar:
                 st.caption(_format_metrics_entry(entry))
         else:
             st.caption("No completions yet.")
+
+    st.divider()
+    _diag_url = f"/diagnostics?agent={urllib.request.pathname2url(agent_choice)}"
+    st.markdown(
+        f'<a href="{_diag_url}" target="_blank" '
+        f'style="display:inline-flex;align-items:center;gap:0.35rem;'
+        f'font-size:0.85rem;color:#4a9eff;text-decoration:none;">'
+        f'📊 Open Diagnostics</a>',
+        unsafe_allow_html=True,
+    )
 
 if agent_choice in {"Fitness Nutrition", "Agent1 Demo"}:
     chat_col, right_col = st.columns([3.2, 1.2], gap="large")
@@ -1963,6 +1981,9 @@ with chat_col:
             agent_init_elapsed = 0.0
             model_call_elapsed = 0.0
             turn_debug_logs: list[str] = []
+            _diag_system_prompt = ""
+            _diag_context_data: dict | None = None
+            _diag_errors: list[str] = []
 
             def _add_turn_debug(line: str) -> None:
                 safe_line = _redact_sensitive_text(line)
@@ -1987,6 +2008,7 @@ with chat_col:
 
                 if agent_choice == "General Chat Assistant":
                     logger.info("Running General Chat Assistant agent")
+                    _diag_system_prompt = "You are a helpful AI assistant."
                     agent_build_started = time.perf_counter()
                     agent = asyncio.run(azure_foundry_general_agent())
                     agent_build_elapsed = time.perf_counter() - agent_build_started
@@ -2018,6 +2040,7 @@ with chat_col:
                     )
                 elif agent_choice == "Kaito Assistant":
                     logger.info("Running Kaito Assistant agent")
+                    _diag_system_prompt = "You are a helpful Kaito assistant."
                     if endpoint:
                         os.environ["KAITO_INFERENCE_ENDPOINT"] = _clean_env(endpoint)
                     if api_key:
@@ -2046,6 +2069,7 @@ with chat_col:
                     )
                 elif agent_choice == "KAITO RAG Assistant":
                     logger.info("Running KAITO RAG Assistant agent")
+                    _diag_system_prompt = "You are a KAITO RAG assistant."
                     if endpoint:
                         os.environ["KAITO_RAGENGINE_ENDPOINT"] = _clean_env(endpoint)
                     if api_key:
@@ -2107,6 +2131,10 @@ with chat_col:
                     _add_turn_debug(f"workflow latency_s={llm_elapsed:.2f}")
                 else:
                     logger.info("Running Fitness Nutrition agent")
+                    _diag_system_prompt = (
+                        "You are a fitness nutrition assistant with access to user profile, body metrics, and meal macro history. "
+                        "When users ask about goals or trends, use tracked data first and ask clarifying questions if missing data."
+                    )
                     fitness_user_id, _ = _resolve_memory_user_id(st.session_state.get("fitness_user_name", "roy"))
                     # Route to the right backend based on the model chosen in the sidebar dropdown.
                     # model_backends in config.yaml maps model names to provider names.
@@ -2137,6 +2165,7 @@ with chat_col:
                     )
                     try:
                         model_snapshot = get_fitness_repository(_fitness_db_path()).get_read_model(fitness_user_id, metric_limit=6, meal_limit=6)
+                        _diag_context_data = model_snapshot
                         short_count = len([m for m in st.session_state.messages if m.get("role") in {"user", "assistant"}])
                         long_profile = len(model_snapshot.get("profile", {})) if isinstance(model_snapshot.get("profile"), dict) else 0
                         long_metrics = len(model_snapshot.get("recent_body_metrics", [])) if isinstance(model_snapshot.get("recent_body_metrics"), list) else 0
@@ -2176,6 +2205,7 @@ with chat_col:
                 logger.error("HTTP error: %s %s %s", exc.code, safe_reason, safe_body)
                 error_message = f"Request failed: {exc.code} {safe_reason}\n{safe_body}"
                 _add_turn_debug(f"error type=http code={exc.code} reason={exc.reason}")
+                _diag_errors.append(f"HTTP {exc.code}: {safe_reason}")
                 st.error(error_message)
                 st.session_state.messages.append(
                     {
@@ -2190,6 +2220,7 @@ with chat_col:
                 logger.error("URL error: %s", safe_reason)
                 error_message = f"Request failed: {safe_reason}"
                 _add_turn_debug(f"error type=url reason={exc.reason}")
+                _diag_errors.append(f"URL error: {safe_reason}")
                 st.error(error_message)
                 st.session_state.messages.append(
                     {
@@ -2204,6 +2235,7 @@ with chat_col:
                 logger.exception("Unhandled error: %s", safe_exc)
                 error_message = f"Request failed: {safe_exc}"
                 _add_turn_debug(f"error type=exception class={type(exc).__name__} detail={exc}")
+                _diag_errors.append(f"{type(exc).__name__}: {safe_exc}")
                 st.error(error_message)
                 st.session_state.messages.append(
                     {
@@ -2226,6 +2258,39 @@ with chat_col:
                     metrics_line = f"{metrics_line} | {usage_summary}"
                 st.session_state.metrics_log.append(metrics_line)
                 logger.info("Completion: %s", _redact_sensitive_text(metrics_line))
+
+                # ── Record diagnostics turn ──────────────────────────
+                try:
+                    _du = _parse_usage_summary(usage_summary)
+                    _sys_est = _diag_est_tokens(_diag_system_prompt)
+                    _ctx_est = _diag_est_tokens(json.dumps(_diag_context_data, default=str)) if _diag_context_data else 0
+                    _input_tok = _du["input"] or _estimate_tokens_from_text(prompt)
+                    _hist_est = max(0, _input_tok - _sys_est - _ctx_est)
+                    _diag_record_turn(DiagnosticsTurn(
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        agent=agent_choice,
+                        model=model or "",
+                        provider=provider_name or "",
+                        status=status,
+                        latency_s=round(elapsed_s, 3),
+                        input_tokens=_du["input"],
+                        output_tokens=_du["output"],
+                        total_tokens=_du["total"],
+                        context_window_max=_diag_ctx_size(model or ""),
+                        system_prompt_est_tokens=_sys_est,
+                        context_provider_est_tokens=_ctx_est,
+                        chat_history_est_tokens=_hist_est,
+                        output_reserved_tokens=int(max_tokens),
+                        messages_count=len([m for m in st.session_state.messages if m.get("role") in {"user", "assistant"}]),
+                        debug_logs=turn_debug_logs[:],
+                        errors=_diag_errors[:],
+                    ))
+                    if _diag_errors:
+                        for _de in _diag_errors:
+                            _diag_record_log(agent_choice, _de, "ERROR")
+                except Exception:
+                    logger.debug("Could not record diagnostics turn", exc_info=True)
+
                 if not st.session_state._metrics_rerun:
                     st.session_state._metrics_rerun = True
                     st.rerun()
