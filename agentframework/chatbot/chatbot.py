@@ -1,17 +1,17 @@
 import asyncio
+import copy
 import hashlib
 import html
 import importlib
-import io
 import inspect
 import json
 import logging
 import mimetypes
 import os
 import re
-import sqlite3
 import sys
 import time
+import threading
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
@@ -29,6 +29,8 @@ load_dotenv()
 
 LOG_LEVEL_ENV = "LOG_LEVEL"
 DEBUG_LOG_MAX_LINES_ENV = "DEBUG_LOG_MAX_LINES"
+_FITNESS_READ_MODEL_CACHE: dict[tuple[str, ...], dict[str, Any]] = {}
+_FITNESS_READ_MODEL_CACHE_LOCK = threading.Lock()
 
 
 def _sensitive_values() -> list[str]:
@@ -89,7 +91,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent_framework import ChatAgent, ChatMessage, DataContent, TextContent
+from agent_framework import AgentRunResponse, ChatAgent, ChatMessage, DataContent, TextContent
 from agent_framework.azure import AzureOpenAIChatClient
 from azure.identity import AzureCliCredential
 from ai_chat_client import KaitoChatClient
@@ -97,19 +99,29 @@ from fitness_memory import (
     DatabaseContextProvider,
     PhotoSubmissionStructuredOutput,
     TextTurnStructuredOutput,
+    build_fitness_context_instructions,
     extract_idempotency_key,
     get_fitness_repository,
 )
-from main import agent1, azure_foundry_general_agent, load_prompt_template, render_instructions
-from run_utils import run_with_retry
+from main import azure_foundry_general_agent, load_prompt_template, render_instructions
+from openai import RateLimitError
+from run_utils import get_backoff_seconds, run_with_retry
 from diagnostics_store import (
     DiagnosticsTurn,
+    PerformanceEvent,
     record_turn as _diag_record_turn,
     record_log as _diag_record_log,
+    record_performance_event as _diag_record_performance,
     get_context_window_size as _diag_ctx_size,
     estimate_tokens as _diag_est_tokens,
 )
+from fitness_background_persistence import (
+    FitnessPersistenceHooks,
+    FitnessPersistenceRequest,
+    schedule_fitness_persistence,
+)
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
+_FITNESS_AGENT_NAME = "Fitness Nutrition"
 
 
 def _clean_env(value: str | None) -> str:
@@ -232,6 +244,33 @@ def _extract_display_text(payload: object) -> str:
         return json.dumps(payload, indent=2)
 
     return str(payload)
+
+
+def _record_perf_event(
+    *,
+    agent: str,
+    request_id: str,
+    category: str,
+    name: str,
+    started: float,
+    status: str = "ok",
+    **details: Any,
+) -> None:
+    try:
+        _diag_record_performance(
+            PerformanceEvent(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                agent=agent,
+                request_id=request_id,
+                category=category,
+                name=name,
+                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                status=status,
+                details={key: value for key, value in details.items() if value is not None},
+            )
+        )
+    except Exception:
+        logger.debug("Could not record performance event", exc_info=True)
 
 
 def _format_agent1_output(raw_output: str) -> str:
@@ -388,7 +427,7 @@ def _append_agent1_trace(direction: str, method: str, payload: dict[str, Any] | 
     events = _agent1_trace_state()
     events.append(
         {
-            "ts": datetime.now(ZoneInfo(_browser_timezone_name())).strftime("%H:%M:%S"),
+            "ts": datetime.now(ZoneInfo(_browser_timezone_name())).strftime("%m/%d/%Y"),
             "direction": direction,
             "method": method,
             "payload": payload or {},
@@ -706,6 +745,137 @@ def _coerce_text_turn_payload(result: object) -> tuple[TextTurnStructuredOutput,
     raise ValueError("Unable to parse structured text turn output.")
 
 
+def _heuristic_text_turn_payload(user_text: str) -> tuple[TextTurnStructuredOutput, dict] | None:
+    text = (user_text or "").strip()
+    if not text:
+        return None
+
+    profile_updates = []
+    body_metric_events = []
+
+    def _add_profile(field: str, value: object) -> None:
+        if value is None:
+            return
+        profile_updates.append({"field": field, "value": value})
+
+    birthday_match = re.search(
+        r"\b(?:birthday|dob|date of birth)\s*(?:is|=|:|to)?\s*(\d{1,2}/\d{1,2}/\d{4}|\d{8}|\d{4}-\d{2}-\d{2})\b",
+        text,
+        re.IGNORECASE,
+    )
+    if birthday_match:
+        _add_profile("birthday_mmddyyyy", birthday_match.group(1))
+
+    name_match = re.search(r"\b(?:my name is|name\s*(?:is|=|:))\s*([A-Za-z][A-Za-z .'-]{0,40})", text, re.IGNORECASE)
+    if name_match:
+        _add_profile("name", name_match.group(1).strip())
+
+    sex_match = re.search(r"\b(?:sex|gender)\s*(?:is|=|:)?\s*(male|female|other)\b", text, re.IGNORECASE)
+    if sex_match:
+        _add_profile("sex", sex_match.group(1).lower())
+
+    city_match = re.search(r"\bcity\s*(?:is|=|:)?\s*([A-Za-z][A-Za-z .'-]{0,40})", text, re.IGNORECASE)
+    if city_match:
+        _add_profile("city", city_match.group(1).strip())
+
+    country_match = re.search(r"\bcountry\s*(?:is|=|:)?\s*([A-Za-z][A-Za-z .'-]{0,40})", text, re.IGNORECASE)
+    if country_match:
+        _add_profile("country", country_match.group(1).strip())
+
+    timezone_match = re.search(r"\btimezone\s*(?:is|=|:)?\s*([A-Za-z_]+/[A-Za-z_]+|[A-Za-z_+-]+)\b", text, re.IGNORECASE)
+    if timezone_match:
+        _add_profile("timezone", timezone_match.group(1).strip())
+
+    height_ft_match = re.search(
+        r"\b(?:height)\s*(?:is|=|:|to)?\s*(\d{1,2})\s*'\s*(\d{1,2})(?:\s*\"|\s+in(?:ches?)?)?",
+        text,
+        re.IGNORECASE,
+    )
+    if height_ft_match:
+        feet = int(height_ft_match.group(1))
+        inches = int(height_ft_match.group(2))
+        _add_profile("height_value", float(feet * 12 + inches))
+        _add_profile("height_unit", "in")
+    else:
+        height_match = re.search(
+            r"\b(?:height)\s*(?:is|=|:|to)?\s*(\d+(?:\.\d+)?)\s*(in|inch|inches|cm)\b",
+            text,
+            re.IGNORECASE,
+        )
+        if height_match:
+            _add_profile("height_value", float(height_match.group(1)))
+            _add_profile("height_unit", height_match.group(2).lower())
+
+    weight_match = re.search(
+        r"\b(?:my\s+)?weight\s*(?:is|=|:|to)?\s*(\d+(?:\.\d+)?)\s*(lb|lbs|kg)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if weight_match:
+        unit = weight_match.group(2).lower()
+        body_metric_events.append(
+            {
+                "metric_type": "weight",
+                "value_primary": float(weight_match.group(1)),
+                "value_secondary": None,
+                "unit": "lbs" if unit in {"lb", "lbs"} else "kg",
+                "observed_at": None,
+                "source": "manual",
+                "confidence": 1.0,
+                "notes": "heuristic-text-fallback",
+            }
+        )
+
+    waist_match = re.search(
+        r"\b(?:my\s+)?waist\s*(?:is|=|:|to)?\s*(\d+(?:\.\d+)?)\s*(in|inch|inches|cm)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if waist_match:
+        unit = waist_match.group(2).lower()
+        body_metric_events.append(
+            {
+                "metric_type": "waist",
+                "value_primary": float(waist_match.group(1)),
+                "value_secondary": None,
+                "unit": "in" if unit in {"in", "inch", "inches"} else "cm",
+                "observed_at": None,
+                "source": "manual",
+                "confidence": 1.0,
+                "notes": "heuristic-text-fallback",
+            }
+        )
+
+    bp_match = re.search(
+        r"\b(?:blood pressure|bp)\s*(?:is|=|:|to)?\s*(\d+(?:\.\d+)?)\s*(?:/|over)\s*(\d+(?:\.\d+)?)\s*(mmhg)?\b",
+        text,
+        re.IGNORECASE,
+    )
+    if bp_match:
+        body_metric_events.append(
+            {
+                "metric_type": "blood_pressure",
+                "value_primary": float(bp_match.group(1)),
+                "value_secondary": float(bp_match.group(2)),
+                "unit": "mmHg",
+                "observed_at": None,
+                "source": "manual",
+                "confidence": 1.0,
+                "notes": "heuristic-text-fallback",
+            }
+        )
+
+    if not profile_updates and not body_metric_events:
+        return None
+
+    payload_dict = {
+        "profile_updates": profile_updates,
+        "body_metric_events_insert": body_metric_events,
+        "persistence_ops": [],
+    }
+    return TextTurnStructuredOutput.model_validate(payload_dict), payload_dict
+
+
 async def _persist_text_turn_memory(
     *,
     agent: ChatAgent,
@@ -713,7 +883,8 @@ async def _persist_text_turn_memory(
     user_id: str,
     user_text: str,
     assistant_text: str,
-) -> None:
+    request_id: str = "",
+) -> bool:
     extraction_prompt = (
         "Extract durable memory updates from this conversation turn and return strict JSON only.\n"
         "Conversation turn:\n"
@@ -729,24 +900,49 @@ async def _persist_text_turn_memory(
     )
 
     try:
+        extraction_started = time.perf_counter()
         result = await run_with_retry(
             agent,
             extraction_prompt,
             response_format=TextTurnStructuredOutput,
         )
+        _record_perf_event(
+            agent=_FITNESS_AGENT_NAME,
+            request_id=request_id,
+            category="llm",
+            name="extract_text_turn_memory",
+            started=extraction_started,
+            output_tokens=getattr(getattr(result, "usage_details", None), "output_token_count", None),
+        )
         payload, raw_output = _coerce_text_turn_payload(result)
         if not payload.profile_updates and not payload.body_metric_events_insert:
-            _append_memory_debug_event("text_persist", "no explicit profile/body metric facts extracted")
-            return
+            heuristic_payload = _heuristic_text_turn_payload(user_text)
+            if heuristic_payload is not None:
+                payload, raw_output = heuristic_payload
+                _append_memory_debug_event("text_persist", "used heuristic fallback for explicit profile/body metric facts")
+                _diag_record_log(_FITNESS_AGENT_NAME, f"Heuristic text-turn persistence fallback used for {user_id}", "INFO")
+            else:
+                _append_memory_debug_event("text_persist", "no explicit profile/body metric facts extracted")
+                return False
 
         idempotency_key = hashlib.sha256(
             f"{user_id}:{user_text}:{assistant_text}".encode("utf-8")
         ).hexdigest()
+        persist_started = time.perf_counter()
         persist_result = repo.apply_text_turn_submission(
             user_id=user_id,
             payload=payload,
             raw_structured_output=raw_output,
             idempotency_key=idempotency_key,
+        )
+        _record_perf_event(
+            agent=_FITNESS_AGENT_NAME,
+            request_id=request_id,
+            category="db",
+            name="apply_text_turn_submission",
+            started=persist_started,
+            profile_updates=len(payload.profile_updates),
+            body_metric_events=len(payload.body_metric_events_insert),
         )
         logger.info("Text-turn memory persisted: %s", persist_result)
         profile_debug = persist_result.get("profile_debug", {}) if isinstance(persist_result, dict) else {}
@@ -760,15 +956,75 @@ async def _persist_text_turn_memory(
                 f"applied={applied_fields or ['none']} normalized={normalized_fields or ['none']} skipped={skipped_fields or ['none']}"
             ),
         )
+        return True
     except Exception as exc:
+        heuristic_payload = _heuristic_text_turn_payload(user_text)
+        if heuristic_payload is not None:
+            payload, raw_output = heuristic_payload
+            idempotency_key = hashlib.sha256(
+                f"{user_id}:{user_text}:{assistant_text}:heuristic".encode("utf-8")
+            ).hexdigest()
+            persist_started = time.perf_counter()
+            persist_result = repo.apply_text_turn_submission(
+                user_id=user_id,
+                payload=payload,
+                raw_structured_output=raw_output,
+                idempotency_key=idempotency_key,
+            )
+            _record_perf_event(
+                agent=_FITNESS_AGENT_NAME,
+                request_id=request_id,
+                category="db",
+                name="apply_text_turn_submission_heuristic_fallback",
+                started=persist_started,
+                profile_updates=len(payload.profile_updates),
+                body_metric_events=len(payload.body_metric_events_insert),
+            )
+            logger.info("Text-turn memory persisted via heuristic fallback: %s", persist_result)
+            _append_memory_debug_event("text_persist", "LLM extraction failed; used heuristic fallback")
+            _diag_record_log(_FITNESS_AGENT_NAME, f"Heuristic fallback persisted text-turn memory for {user_id}", "WARNING")
+            return True
         logger.warning("Could not persist text-turn memory: %s", exc)
         _append_memory_debug_event("text_persist", f"failed: {exc}")
+        return False
 
 
 async def _resolve_maybe_awaitable(value: object) -> object:
     if hasattr(value, "__await__"):
         return await value
     return value
+
+
+async def _run_with_streaming_placeholder(
+    agent: ChatAgent,
+    messages: object,
+    *,
+    placeholder: Any | None,
+    max_retries: int = 5,
+    **kwargs: Any,
+) -> AgentRunResponse:
+    for attempt in range(1, max_retries + 1):
+        streamed_text = ""
+        response_updates = []
+        try:
+            async for update in agent.run_stream(messages, **kwargs):
+                response_updates.append(update)
+                if update.text:
+                    streamed_text = f"{streamed_text}{update.text}"
+                    if placeholder is not None:
+                        placeholder.markdown(streamed_text)
+
+            response = AgentRunResponse.from_agent_run_response_updates(response_updates)
+            final_text = _extract_display_text(getattr(response, "text", None) or streamed_text or str(response))
+            if placeholder is not None and final_text != streamed_text:
+                placeholder.markdown(final_text)
+            return response
+        except RateLimitError:
+            if attempt == max_retries:
+                raise
+            if placeholder is not None:
+                placeholder.empty()
+            await asyncio.sleep(get_backoff_seconds(attempt))
 
 
 def _normalize_user_id(user_name: str) -> str:
@@ -790,21 +1046,87 @@ def _short_local_datetime(value: str | None) -> str:
     if not value:
         return ""
     try:
-        normalized = value.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(normalized)
+        if isinstance(value, datetime):
+            dt = value
+        else:
+            normalized = str(value).replace("Z", "+00:00")
+            dt = datetime.fromisoformat(normalized)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         tz = ZoneInfo(_browser_timezone_name())
-        return dt.astimezone(tz).strftime("%m/%d/%Y %I:%M %p")
+        return dt.astimezone(tz).strftime("%m/%d/%Y")
     except Exception:
         return str(value)
+
+
+def _short_local_date(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        if isinstance(value, datetime):
+            dt = value
+        else:
+            normalized = str(value).replace("Z", "+00:00")
+            dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        tz = ZoneInfo(_browser_timezone_name())
+        return dt.astimezone(tz).strftime("%m/%d/%Y")
+    except Exception:
+        parsed_birthday = _parse_birthday_mmddyyyy(value)
+        if parsed_birthday is not None:
+            return parsed_birthday.strftime("%m/%d/%Y")
+        return str(value)
+
+
+def _format_height_display(value: object, unit: object) -> str:
+    if value is None:
+        return "n/a"
+    text_value = str(value).strip()
+    text_unit = str(unit).strip().lower() if unit is not None else ""
+    if not text_value:
+        return "n/a"
+    try:
+        numeric_value = float(text_value)
+    except (TypeError, ValueError):
+        numeric_value = None
+
+    if numeric_value is not None and text_unit in {"in", "inch", "inches"}:
+        total_inches = int(round(numeric_value))
+        feet = total_inches // 12
+        inches = total_inches % 12
+        return f"{feet}' {inches}\""
+
+    if text_unit:
+        return f"{text_value} {text_unit}"
+    return text_value
+
+
+def _format_metric_value(value: object, *, decimals: int = 1) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.{decimals}f}"
+    except (TypeError, ValueError):
+        text = str(value).strip()
+        return text if text else "n/a"
 
 
 def _resolve_memory_user_id(user_name: str) -> tuple[str, bool]:
     normalized = _normalize_user_id(user_name)
     try:
+        started = time.perf_counter()
         repo = get_fitness_repository(_fitness_db_path())
-        return repo.resolve_user_id(normalized)
+        resolved_user_id, resolved_from_name = repo.resolve_user_id(normalized)
+        _record_perf_event(
+            agent=_FITNESS_AGENT_NAME,
+            request_id="sidebar",
+            category="db",
+            name="resolve_user_id",
+            started=started,
+            resolved_from_name=resolved_from_name,
+        )
+        return resolved_user_id, resolved_from_name
     except Exception:
         logger.exception("Could not resolve memory user id")
 
@@ -1043,12 +1365,33 @@ def _pretty_profile_key(key: str) -> str:
 def _append_memory_debug_event(event: str, details: str) -> None:
     try:
         logs = st.session_state.setdefault("memory_debug_events", [])
-        stamp = datetime.now(ZoneInfo(_browser_timezone_name())).strftime("%m/%d/%Y %I:%M:%S %p")
+        stamp = datetime.now(ZoneInfo(_browser_timezone_name())).strftime("%m/%d/%Y")
         logs.append(f"[{stamp}] {event}: {details}")
         if len(logs) > 400:
             del logs[:-400]
     except Exception:
         pass
+
+
+def _sync_fitness_session_user(resolved_user_id: str) -> None:
+    previous_user_id = str(st.session_state.get("fitness_active_user_id") or "").strip()
+    current_user_id = str(resolved_user_id or "").strip()
+    if not current_user_id:
+        return
+    if not previous_user_id:
+        st.session_state["fitness_active_user_id"] = current_user_id
+        return
+    if previous_user_id == current_user_id:
+        return
+
+    st.session_state["fitness_active_user_id"] = current_user_id
+    st.session_state.messages = []
+    st.session_state["memory_debug_events"] = []
+    st.session_state.pop("fitness_last_upload_marker", None)
+    st.session_state.pop("chat_prompt_input", None)
+    _invalidate_fitness_snapshot_cache(previous_user_id)
+    _invalidate_fitness_snapshot_cache(current_user_id)
+    st.rerun()
 
 
 def _estimate_tokens_from_text(text: str) -> int:
@@ -1158,8 +1501,262 @@ def _supports_image_inputs(selected_model: str | None) -> bool:
     return True
 
 
-def _build_fitness_runtime(user_id: str, selected_model: str | None, chat_client=None) -> tuple[ChatAgent, object, str, str]:
+def _fitness_cache_namespace() -> tuple[str, ...]:
+    backend = os.getenv("FITNESS_DB_BACKEND", "sqlite").strip().lower()
+    if backend in {"azuresql", "azure_sql", "azure-sql"}:
+        return (
+            "azuresql",
+            _clean_env(os.getenv("AZURE_SQL_SERVER")),
+            _clean_env(os.getenv("AZURE_SQL_DATABASE")),
+            _clean_env(os.getenv("AZURE_SQL_SCHEMA", "dbo")),
+        )
+    return ("sqlite", str(_fitness_db_path().resolve()))
+
+
+def _fitness_snapshot_cache_key(user_id: str, metric_limit: int, meal_limit: int) -> tuple[str, ...]:
+    return (*_fitness_cache_namespace(), user_id, str(metric_limit), str(meal_limit))
+
+
+def _invalidate_fitness_snapshot_cache(user_id: str | None = None) -> None:
+    with _FITNESS_READ_MODEL_CACHE_LOCK:
+        keys_to_remove = [
+            key for key in _FITNESS_READ_MODEL_CACHE
+            if user_id is None or (len(key) >= 3 and key[-3] == user_id)
+        ]
+        for key in keys_to_remove:
+            _FITNESS_READ_MODEL_CACHE.pop(key, None)
+
+
+def _load_fitness_snapshot(
+    user_id: str,
+    *,
+    metric_limit: int = 6,
+    meal_limit: int = 6,
+    force_refresh: bool = False,
+    request_id: str = "",
+) -> dict[str, Any]:
+    cache_key = _fitness_snapshot_cache_key(user_id, metric_limit, meal_limit)
+    if not force_refresh:
+        with _FITNESS_READ_MODEL_CACHE_LOCK:
+            cached = _FITNESS_READ_MODEL_CACHE.get(cache_key)
+        if cached is not None:
+            cached_profile = cached.get("profile", {}) if isinstance(cached, dict) else {}
+            cached_profile_user_id = ""
+            if isinstance(cached_profile, dict):
+                cached_profile_user_id = str(cached_profile.get("user_id") or "").strip()
+            if cached_profile_user_id and cached_profile_user_id != user_id:
+                logger.warning(
+                    "Discarding mismatched cached fitness snapshot for requested user_id=%s because profile.user_id=%s",
+                    user_id,
+                    cached_profile_user_id,
+                )
+                with _FITNESS_READ_MODEL_CACHE_LOCK:
+                    _FITNESS_READ_MODEL_CACHE.pop(cache_key, None)
+            else:
+                snapshot_copy = copy.deepcopy(cached)
+                _diag_record_performance(
+                    PerformanceEvent(
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        agent=_FITNESS_AGENT_NAME,
+                        request_id=request_id,
+                        category="cache",
+                        name="fitness_snapshot_cache_hit",
+                        duration_ms=0.0,
+                        status="ok",
+                        details={"metric_limit": metric_limit, "meal_limit": meal_limit},
+                    )
+                )
+                return snapshot_copy
+
     repo = get_fitness_repository(_fitness_db_path())
+    started = time.perf_counter()
+    read_model = repo.get_read_model(user_id, metric_limit=metric_limit, meal_limit=meal_limit)
+    _record_perf_event(
+        agent=_FITNESS_AGENT_NAME,
+        request_id=request_id,
+        category="db",
+        name="get_read_model",
+        started=started,
+        metric_limit=metric_limit,
+        meal_limit=meal_limit,
+        force_refresh=force_refresh,
+    )
+    snapshot = {
+        "profile": read_model.get("profile", {}) or {},
+        "recent_body_metrics": read_model.get("recent_body_metrics", []) or [],
+        "recent_meals": read_model.get("recent_meals", []) or [],
+    }
+    profile_user_id = ""
+    if isinstance(snapshot.get("profile"), dict):
+        profile_user_id = str(snapshot["profile"].get("user_id") or "").strip()
+    if profile_user_id and profile_user_id != user_id:
+        logger.warning(
+            "Fitness read model mismatch for requested user_id=%s because profile.user_id=%s",
+            user_id,
+            profile_user_id,
+        )
+    snapshot["context_instructions"] = build_fitness_context_instructions(
+        snapshot,
+        default_context_prompt=getattr(DatabaseContextProvider, "DEFAULT_CONTEXT_PROMPT", ""),
+    )
+    with _FITNESS_READ_MODEL_CACHE_LOCK:
+        _FITNESS_READ_MODEL_CACHE[cache_key] = copy.deepcopy(snapshot)
+    return copy.deepcopy(snapshot)
+
+
+async def _persist_photo_turn_memory(
+    *,
+    agent: ChatAgent,
+    repo: object,
+    user_id: str,
+    image_bytes: bytes,
+    image_name: str | None,
+    request_id: str = "",
+) -> bool:
+    mime_type, _ = mimetypes.guess_type(image_name or "")
+    mime_type = mime_type or "application/octet-stream"
+    extraction_prompt = (
+        "Analyze this meal image and return a strict JSON object matching this schema exactly:\n"
+        "{\n"
+        '  "profile_updates": [{"field": "name|birthday_mmddyyyy|height_value|height_unit|city|country|sex|timezone|external_user_key", "value": "string|number|null"}],\n'
+        '  "meal_upsert": {"occurred_at": "ISO-8601|null", "meal_type": "breakfast|lunch|dinner|snack|other|null", "source_image_uri": "string|null", "source_hash": "string|null", "unit_system": "metric|imperial|null", "notes": "string|null"},\n'
+        '  "meal_items_upsert": [{"food_label": "string", "quantity_value": 0.0, "quantity_unit": "string|null", "confidence": 0.0, "notes": "string|null"}],\n'
+        '  "macro_events_insert": [{"calories_kcal": 0.0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0, "fiber_g": 0.0, "sugar_g": 0.0, "sodium_mg": 0.0, "confidence": 0.0, "model_name": "string|null", "model_version": "string|null", "prompt_version": "string|null", "notes": "string|null"}],\n'
+        '  "body_metric_events_insert": [{"metric_type": "weight|waist|blood_pressure", "value_primary": 0.0, "value_secondary": 0.0, "unit": "lbs|kg|in|cm|mmHg", "observed_at": "ISO-8601|null", "source": "photo|manual|assistant|null", "confidence": 0.0, "notes": "string|null"}],\n'
+        '  "persistence_ops": [{"operation": "insert|update|upsert", "target": "users|body_metric_events|meal_events", "idempotency_key": "string|null"}]\n'
+        "}\n"
+        "Rules:\n"
+        "- If a meal is visible, provide best-effort numeric macro estimates in macro_events_insert (do not leave it empty).\n"
+        "- Use conservative estimates with lower confidence when uncertain.\n"
+        "- Return empty arrays/nulls only when the image is not food, unreadable, or insufficient for estimation."
+    )
+    extraction_message = ChatMessage(
+        role="user",
+        contents=[
+            TextContent(text=extraction_prompt),
+            DataContent(data=image_bytes, media_type=mime_type),
+        ],
+    )
+    try:
+        extraction_started = time.perf_counter()
+        extraction_result = await run_with_retry(
+            agent,
+            extraction_message,
+            response_format=PhotoSubmissionStructuredOutput,
+        )
+        _record_perf_event(
+            agent=_FITNESS_AGENT_NAME,
+            request_id=request_id,
+            category="llm",
+            name="extract_photo_memory",
+            started=extraction_started,
+            image_name=image_name,
+            output_tokens=getattr(getattr(extraction_result, "usage_details", None), "output_token_count", None),
+        )
+        payload, raw_output = _coerce_photo_payload(extraction_result)
+        raw_output = _ensure_macro_events_in_output(raw_output)
+        payload = PhotoSubmissionStructuredOutput.model_validate(raw_output)
+        file_hint = image_name or "uploaded-image"
+        idempotency_key = extract_idempotency_key(payload, image_bytes, user_id)
+        persist_started = time.perf_counter()
+        repo.apply_photo_submission(
+            user_id=user_id,
+            image_path=file_hint,
+            payload=payload,
+            raw_structured_output=raw_output,
+            idempotency_key=idempotency_key,
+        )
+        _record_perf_event(
+            agent=_FITNESS_AGENT_NAME,
+            request_id=request_id,
+            category="db",
+            name="apply_photo_submission",
+            started=persist_started,
+            image_name=file_hint,
+            profile_updates=len(payload.profile_updates),
+            body_metric_events=len(payload.body_metric_events_insert),
+        )
+        logger.info(
+            "Photo memory persisted image=%s profile_updates=%s body_metrics=%s",
+            file_hint,
+            len(payload.profile_updates),
+            len(payload.body_metric_events_insert),
+        )
+        return True
+    except Exception:
+        logger.exception("Could not persist photo extraction memory")
+        return False
+
+
+async def _persist_fitness_turn_background_async(request: FitnessPersistenceRequest) -> None:
+    repo = get_fitness_repository(_fitness_db_path())
+    fitness_chat_client = None
+    fitness_model = request.selected_model
+    if request.backend_cfg:
+        fitness_chat_client, fitness_model = _build_fitness_chat_client(request.backend_cfg, PROVIDERS)
+
+    small_context = _is_small_context_model(fitness_model)
+    metric_limit = 2 if small_context else 5
+    meal_limit = 2 if small_context else 6
+    snapshot = _load_fitness_snapshot(request.user_id, metric_limit=metric_limit, meal_limit=meal_limit)
+    agent, _, _, _ = _build_fitness_runtime(
+        request.user_id,
+        fitness_model,
+        chat_client=fitness_chat_client,
+        repo=repo,
+        cached_snapshot=snapshot,
+    )
+
+    cache_dirty = False
+    if request.image_bytes is not None and not small_context:
+        cache_dirty = await _persist_photo_turn_memory(
+            agent=agent,
+            repo=repo,
+            user_id=request.user_id,
+            image_bytes=request.image_bytes,
+            image_name=request.image_name,
+            request_id=request.request_id,
+        ) or cache_dirty
+
+    if not small_context:
+        cache_dirty = await _persist_text_turn_memory(
+            agent=agent,
+            repo=repo,
+            user_id=request.user_id,
+            user_text=request.user_prompt,
+            assistant_text=request.assistant_text,
+            request_id=request.request_id,
+        ) or cache_dirty
+
+    if request.serialized_thread is not None:
+        thread_save_started = time.perf_counter()
+        repo.upsert_thread_state(
+            user_id=request.user_id,
+            session_key=request.session_key,
+            agent_name=request.agent_name,
+            session_state=request.serialized_thread,
+            summary_text=request.user_prompt,
+        )
+        _record_perf_event(
+            agent=_FITNESS_AGENT_NAME,
+            request_id=request.request_id,
+            category="db",
+            name="upsert_thread_state",
+            started=thread_save_started,
+        )
+
+    if cache_dirty:
+        _invalidate_fitness_snapshot_cache(request.user_id)
+
+
+def _build_fitness_runtime(
+    user_id: str,
+    selected_model: str | None,
+    chat_client=None,
+    repo: object | None = None,
+    cached_snapshot: dict[str, Any] | None = None,
+) -> tuple[ChatAgent, object, str, str]:
+    repo = repo or get_fitness_repository(_fitness_db_path())
     session_key = f"fitness:{user_id}"
     agent_name = "fitness_agent"
     instructions = (
@@ -1172,7 +1769,15 @@ def _build_fitness_runtime(user_id: str, selected_model: str | None, chat_client
     _small_context = _is_small_context_model(selected_model)
     meal_limit = 2 if _small_context else 6
     metric_limit = 2 if _small_context else 5
-    context_provider = DatabaseContextProvider(repo, user_id=user_id, meal_limit=meal_limit, metric_limit=metric_limit)
+    snapshot = cached_snapshot or _load_fitness_snapshot(user_id, metric_limit=metric_limit, meal_limit=meal_limit)
+    context_provider = DatabaseContextProvider(
+        repo,
+        user_id=user_id,
+        meal_limit=meal_limit,
+        metric_limit=metric_limit,
+        read_model=snapshot,
+        context_instructions=snapshot.get("context_instructions"),
+    )
     agent = ChatAgent(
         chat_client=chat_client,
         instructions=instructions,
@@ -1193,26 +1798,72 @@ async def _run_fitness_turn(
     selected_model: str | None,
     image_bytes: bytes | None,
     image_name: str | None,
+    assistant_placeholder: Any | None = None,
+    request_id: str = "",
     chat_client=None,
+    backend_cfg: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
-    agent, repo, session_key, agent_name = _build_fitness_runtime(user_id, selected_model, chat_client=chat_client)
+    small_context = _is_small_context_model(selected_model)
+    metric_limit = 2 if small_context else 5
+    meal_limit = 2 if small_context else 6
+    snapshot = _load_fitness_snapshot(user_id, metric_limit=metric_limit, meal_limit=meal_limit, request_id=request_id)
+    agent, repo, session_key, agent_name = _build_fitness_runtime(
+        user_id,
+        selected_model,
+        chat_client=chat_client,
+        cached_snapshot=snapshot,
+    )
     _append_memory_debug_event(
         "run_start",
         f"user_id={user_id} session_key={session_key} model={_fitness_chat_model(selected_model)}",
     )
     # Small-context models start a fresh thread each turn to avoid accumulated history
     # overflowing their token limit. Durable fitness memory still comes via DatabaseContextProvider.
-    _small_context = _is_small_context_model(selected_model)
-    saved_state = None if _small_context else repo.load_thread_state(user_id=user_id, session_key=session_key, agent_name=agent_name)
+    thread_load_started = time.perf_counter()
+    saved_state = None if small_context else repo.load_thread_state(user_id=user_id, session_key=session_key, agent_name=agent_name)
+    if not small_context:
+        _record_perf_event(
+            agent=_FITNESS_AGENT_NAME,
+            request_id=request_id,
+            category="db",
+            name="load_thread_state",
+            started=thread_load_started,
+            restored=bool(saved_state),
+        )
     if saved_state:
         try:
+            deserialize_started = time.perf_counter()
             thread = await _resolve_maybe_awaitable(agent.deserialize_thread(saved_state))
+            _record_perf_event(
+                agent=_FITNESS_AGENT_NAME,
+                request_id=request_id,
+                category="thread",
+                name="deserialize_thread",
+                started=deserialize_started,
+            )
             _append_memory_debug_event("thread_restore", "restored prior thread state")
         except Exception:
+            new_thread_started = time.perf_counter()
             thread = await _resolve_maybe_awaitable(agent.get_new_thread())
+            _record_perf_event(
+                agent=_FITNESS_AGENT_NAME,
+                request_id=request_id,
+                category="thread",
+                name="get_new_thread_after_restore_failure",
+                started=new_thread_started,
+                status="error",
+            )
             _append_memory_debug_event("thread_restore", "restore failed, created new thread")
     else:
+        new_thread_started = time.perf_counter()
         thread = await _resolve_maybe_awaitable(agent.get_new_thread())
+        _record_perf_event(
+            agent=_FITNESS_AGENT_NAME,
+            request_id=request_id,
+            category="thread",
+            name="get_new_thread",
+            started=new_thread_started,
+        )
         _append_memory_debug_event("thread_restore", "no prior state, created new thread")
 
     usage_summary = ""
@@ -1232,7 +1883,21 @@ async def _run_fitness_turn(
                 DataContent(data=image_bytes, media_type=mime_type),
             ],
         )
-        result = await run_with_retry(agent, request_message, thread=thread)
+        llm_started = time.perf_counter()
+        result = await _run_with_streaming_placeholder(
+            agent,
+            request_message,
+            thread=thread,
+            placeholder=assistant_placeholder,
+        )
+        _record_perf_event(
+            agent=_FITNESS_AGENT_NAME,
+            request_id=request_id,
+            category="llm",
+            name="fitness_turn_with_image",
+            started=llm_started,
+            model=_fitness_chat_model(selected_model),
+        )
         content = _extract_display_text(getattr(result, "text", None) or str(result))
         usage = getattr(result, "usage_details", None)
         if usage:
@@ -1241,70 +1906,25 @@ async def _run_fitness_turn(
                 f"output={usage.output_token_count or 0} "
                 f"total={usage.total_token_count or 0}"
             )
-
-        extraction_prompt = (
-            "Analyze this meal image and return a strict JSON object matching this schema exactly:\n"
-            "{\n"
-            '  "profile_updates": [{"field": "name|birthday_mmddyyyy|height_value|height_unit|city|country|sex|timezone|external_user_key", "value": "string|number|null"}],\n'
-            '  "meal_upsert": {"occurred_at": "ISO-8601|null", "meal_type": "breakfast|lunch|dinner|snack|other|null", "source_image_uri": "string|null", "source_hash": "string|null", "unit_system": "metric|imperial|null", "notes": "string|null"},\n'
-            '  "meal_items_upsert": [{"food_label": "string", "quantity_value": 0.0, "quantity_unit": "string|null", "confidence": 0.0, "notes": "string|null"}],\n'
-            '  "macro_events_insert": [{"calories_kcal": 0.0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0, "fiber_g": 0.0, "sugar_g": 0.0, "sodium_mg": 0.0, "confidence": 0.0, "model_name": "string|null", "model_version": "string|null", "prompt_version": "string|null", "notes": "string|null"}],\n'
-            '  "body_metric_events_insert": [{"metric_type": "weight|waist|blood_pressure", "value_primary": 0.0, "value_secondary": 0.0, "unit": "lbs|kg|in|cm|mmHg", "observed_at": "ISO-8601|null", "source": "photo|manual|assistant|null", "confidence": 0.0, "notes": "string|null"}],\n'
-            '  "persistence_ops": [{"operation": "insert|update|upsert", "target": "users|body_metric_events|meal_events", "idempotency_key": "string|null"}]\n'
-            "}\n"
-            "Rules:\n"
-            "- If a meal is visible, provide best-effort numeric macro estimates in macro_events_insert (do not leave it empty).\n"
-            "- Use conservative estimates with lower confidence when uncertain.\n"
-            "- Return empty arrays/nulls only when the image is not food, unreadable, or insufficient for estimation."
-        )
-        extraction_message = ChatMessage(
-            role="user",
-            contents=[
-                TextContent(text=extraction_prompt),
-                DataContent(data=image_bytes, media_type=mime_type),
-            ],
-        )
-        if _small_context:
+        if small_context:
             _append_memory_debug_event("photo_persist", "skipped: model does not support structured output")
-        else:
-            try:
-                extraction_result = await run_with_retry(
-                    agent,
-                    extraction_message,
-                    response_format=PhotoSubmissionStructuredOutput,
-                )
-                payload, raw_output = _coerce_photo_payload(extraction_result)
-                raw_output = _ensure_macro_events_in_output(raw_output)
-                payload = PhotoSubmissionStructuredOutput.model_validate(raw_output)
-                file_hint = image_name or "uploaded-image"
-                idempotency_key = extract_idempotency_key(payload, image_bytes, user_id)
-                repo.apply_photo_submission(
-                    user_id=user_id,
-                    image_path=file_hint,
-                    payload=payload,
-                    raw_structured_output=raw_output,
-                    idempotency_key=idempotency_key,
-                )
-                _append_memory_debug_event(
-                    "photo_persist",
-                    f"saved meal photo submission image={file_hint} profile_updates={len(payload.profile_updates)} body_metrics={len(payload.body_metric_events_insert)}",
-                )
-            except Exception:
-                logger.exception("Could not persist photo extraction memory")
-                _append_memory_debug_event("photo_persist", "failed to persist photo extraction")
-
-        if not _small_context:
-            await _persist_text_turn_memory(
-                agent=agent,
-                repo=repo,
-                user_id=user_id,
-                user_text=user_prompt,
-                assistant_text=content,
-            )
-        else:
             _append_memory_debug_event("text_persist", "skipped: model does not support structured output")
     else:
-        result = await run_with_retry(agent, user_prompt, thread=thread)
+        llm_started = time.perf_counter()
+        result = await _run_with_streaming_placeholder(
+            agent,
+            user_prompt,
+            thread=thread,
+            placeholder=assistant_placeholder,
+        )
+        _record_perf_event(
+            agent=_FITNESS_AGENT_NAME,
+            request_id=request_id,
+            category="llm",
+            name="fitness_turn_text_only",
+            started=llm_started,
+            model=_fitness_chat_model(selected_model),
+        )
         content = _extract_display_text(getattr(result, "text", None) or str(result))
         usage = getattr(result, "usage_details", None)
         if usage:
@@ -1314,31 +1934,47 @@ async def _run_fitness_turn(
                 f"total={usage.total_token_count or 0}"
             )
 
-        if not _small_context:
-            await _persist_text_turn_memory(
-                agent=agent,
-                repo=repo,
-                user_id=user_id,
-                user_text=user_prompt,
-                assistant_text=content,
-            )
-        else:
+        if small_context:
             _append_memory_debug_event("text_persist", "skipped: model does not support structured output")
 
+    serialized_thread: dict[str, Any] | None = None
     try:
         resolved_thread = await _resolve_maybe_awaitable(thread)
+        thread_serialize_started = time.perf_counter()
         serialized_thread = await resolved_thread.serialize()
-        repo.upsert_thread_state(
-            user_id=user_id,
-            session_key=session_key,
-            agent_name=agent_name,
-            session_state=serialized_thread,
-            summary_text=user_prompt,
+        _record_perf_event(
+            agent=_FITNESS_AGENT_NAME,
+            request_id=request_id,
+            category="thread",
+            name="serialize_thread",
+            started=thread_serialize_started,
         )
-        _append_memory_debug_event("thread_save", "thread state persisted")
+        _append_memory_debug_event("thread_save", "queued background thread persistence")
     except Exception:
         logger.exception("Could not save fitness thread state")
-        _append_memory_debug_event("thread_save", "failed to persist thread state")
+        _append_memory_debug_event("thread_save", "failed to serialize thread state")
+
+    schedule_fitness_persistence(
+        FitnessPersistenceRequest(
+            user_id=user_id,
+            request_id=request_id,
+            selected_model=selected_model,
+            backend_cfg=backend_cfg,
+            user_prompt=user_prompt,
+            assistant_text=content,
+            image_bytes=image_bytes,
+            image_name=image_name,
+            session_key=session_key,
+            agent_name=agent_name,
+            serialized_thread=serialized_thread,
+        ),
+        hooks=FitnessPersistenceHooks(
+            persist_async=_persist_fitness_turn_background_async,
+            record_log=_diag_record_log,
+            logger=logger,
+        ),
+    )
+    _append_memory_debug_event("background_persist", "scheduled memory persistence worker")
 
     _append_memory_debug_event("run_end", "fitness turn completed")
 
@@ -1741,18 +2377,30 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
             help="Used as the user context key for long-term memory retrieval.",
         )
         memory_user_id, resolved_from_name = _resolve_memory_user_id(fitness_user_name_input)
+        _sync_fitness_session_user(memory_user_id)
         if resolved_from_name:
             st.caption(f"Retrieving profile for user: {fitness_user_name_input} (matched user_id: {memory_user_id})")
         else:
             st.caption(f"Retrieving profile for user: {memory_user_id}")
 
+        force_snapshot_refresh = st.button(
+            "Refresh memory snapshot",
+            key=f"fitness_refresh_snapshot_{memory_user_id}",
+            help="Reload the cached profile, body metrics, and meal history for the selected user.",
+        )
+
         profile = {}
         recent_body_metrics = []
         meals = []
+        read_model: dict[str, Any] = {}
         memory_error = None
         try:
-            memory_repo = get_fitness_repository(_fitness_db_path())
-            read_model = memory_repo.get_read_model(memory_user_id, meal_limit=6)
+            read_model = _load_fitness_snapshot(
+                memory_user_id,
+                metric_limit=6,
+                meal_limit=6,
+                force_refresh=force_snapshot_refresh,
+            )
             profile = read_model.get("profile", {}) or {}
             recent_body_metrics = read_model.get("recent_body_metrics", []) or []
             meals = read_model.get("recent_meals", []) or []
@@ -1760,84 +2408,79 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
             logger.exception("Could not load fitness memory panel")
             memory_error = str(exc)
 
-        st.markdown("**User Profile**")
-        if memory_error:
-            st.caption(f"Could not load profile: {memory_error}")
-        elif profile:
-            profile_lines = []
-            ordered_user_fields = [
-                "name",
-                "birthday_mmddyyyy",
-                "height_value",
-                "height_unit",
-                "sex",
-                "city",
-                "country",
-                "timezone",
-            ]
+        with st.expander("User Profile", expanded=False):
+            if memory_error:
+                st.caption(f"Could not load profile: {memory_error}")
+            elif profile:
+                profile_lines = []
+                ordered_user_fields = [
+                    "name",
+                    "birthday_mmddyyyy",
+                    "height_value",
+                    "height_unit",
+                    "sex",
+                    "city",
+                    "country",
+                    "timezone",
+                ]
 
-            def _display_or_na(value: object) -> str:
-                if value is None:
-                    return "n/a"
-                text = str(value).strip()
-                return text if text else "n/a"
+                def _display_or_na(value: object) -> str:
+                    if value is None:
+                        return "n/a"
+                    text = str(value).strip()
+                    return text if text else "n/a"
 
-            birthday = profile.get("birthday_mmddyyyy")
-            age = _age_from_birthday(birthday)
+                birthday = profile.get("birthday_mmddyyyy")
+                age = _age_from_birthday(birthday)
 
-            for key in ordered_user_fields:
-                value = profile.get(key)
-                if key == "birthday_mmddyyyy":
-                    profile_lines.append(f"Birthday: {_display_or_na(value)}")
-                    continue
-                if key == "height_value":
-                    h_val = _display_or_na(profile.get("height_value"))
-                    h_unit = _display_or_na(profile.get("height_unit"))
-                    if h_val == "n/a" and h_unit == "n/a":
-                        profile_lines.append("Height: n/a")
-                    elif h_unit == "n/a":
-                        profile_lines.append(f"Height: {h_val}")
-                    else:
-                        profile_lines.append(f"Height: {h_val} {h_unit}")
-                    continue
-                if key == "height_unit":
-                    continue
-                profile_lines.append(f"{_pretty_profile_key(key)}: {_display_or_na(value)}")
+                for key in ordered_user_fields:
+                    value = profile.get(key)
+                    if key == "birthday_mmddyyyy":
+                        profile_lines.append(f"Birthday: {_display_or_na(_short_local_date(value))}")
+                        continue
+                    if key == "height_value":
+                        profile_lines.append(
+                            f"Height: {_format_height_display(profile.get('height_value'), profile.get('height_unit'))}"
+                        )
+                        continue
+                    if key == "height_unit":
+                        continue
+                    profile_lines.append(f"{_pretty_profile_key(key)}: {_display_or_na(value)}")
 
-            profile_lines.append(f"Current Age: {age if age is not None else 'n/a'}")
+                profile_lines.append(f"Current Age: {age if age is not None else 'n/a'}")
 
-            latest_weight = _latest_metric(recent_body_metrics, "weight")
-            latest_waist = _latest_metric(recent_body_metrics, "waist")
-            latest_bp = _latest_metric(recent_body_metrics, "blood_pressure")
+                latest_weight = _latest_metric(recent_body_metrics, "weight")
+                latest_waist = _latest_metric(recent_body_metrics, "waist")
+                latest_bp = _latest_metric(recent_body_metrics, "blood_pressure")
 
-            if latest_weight:
-                observed = _short_local_datetime(latest_weight.get("observed_at"))
-                profile_lines.append(
-                    f"Current Weight: {latest_weight.get('value_primary')} {latest_weight.get('unit')} ({observed})"
-                )
+                if latest_weight:
+                    observed = _short_local_date(latest_weight.get("observed_at"))
+                    profile_lines.append(
+                        f"Current Weight: {_format_metric_value(latest_weight.get('value_primary'))} {latest_weight.get('unit')} ({observed})"
+                    )
+                else:
+                    profile_lines.append("Current Weight: n/a")
+                if latest_waist:
+                    observed = _short_local_date(latest_waist.get("observed_at"))
+                    profile_lines.append(
+                        f"Current Waist: {_format_metric_value(latest_waist.get('value_primary'))} {latest_waist.get('unit')} ({observed})"
+                    )
+                else:
+                    profile_lines.append("Current Waist: n/a")
+                if latest_bp:
+                    observed = _short_local_date(latest_bp.get("observed_at"))
+                    profile_lines.append(
+                        f"Current Blood Pressure: {_format_metric_value(latest_bp.get('value_primary'), decimals=0)}/{_format_metric_value(latest_bp.get('value_secondary'), decimals=0)} {latest_bp.get('unit')} ({observed})"
+                    )
+                else:
+                    profile_lines.append("Current Blood Pressure: n/a")
+
+                if profile_lines:
+                    st.text("\n".join(profile_lines))
+                else:
+                    st.caption("No profile fields populated yet.")
             else:
-                profile_lines.append("Current Weight: n/a")
-            if latest_waist:
-                observed = _short_local_datetime(latest_waist.get("observed_at"))
-                profile_lines.append(
-                    f"Current Waist: {latest_waist.get('value_primary')} {latest_waist.get('unit')} ({observed})"
-                )
-            else:
-                profile_lines.append("Current Waist: n/a")
-            if latest_bp:
-                observed = _short_local_datetime(latest_bp.get("observed_at"))
-                profile_lines.append(
-                    f"Current Blood Pressure: {latest_bp.get('value_primary')}/{latest_bp.get('value_secondary')} {latest_bp.get('unit')} ({observed})"
-                )
-            else:
-                profile_lines.append("Current Blood Pressure: n/a")
-
-            if profile_lines:
-                st.text("\n".join(profile_lines))
-            else:
-                st.caption("No profile fields populated yet.")
-        else:
-            st.caption("No profile found for this user.")
+                st.caption("No profile found for this user.")
 
         st.divider()
         uploaded_food_image = st.file_uploader(
@@ -1890,7 +2533,12 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
         with st.expander("Memory Debug", expanded=False):
             debug_user_id, debug_resolved = _resolve_memory_user_id(st.session_state.get("fitness_user_name", "roy"))
             debug_session_key = f"fitness:{debug_user_id}"
-            st.caption(f"db_path={_fitness_db_path()}")
+            debug_backend = os.getenv("FITNESS_DB_BACKEND", "sqlite").strip().lower()
+            debug_backend_label = "Azure SQL" if debug_backend in {"azuresql", "azure_sql", "azure-sql"} else "SQLite"
+            if st.button("Force refresh debug snapshot", key=f"fitness_refresh_debug_{debug_user_id}"):
+                _invalidate_fitness_snapshot_cache(debug_user_id)
+                st.rerun()
+            st.caption(f"backend={debug_backend_label}")
             st.caption(f"user_id={debug_user_id} | session_key={debug_session_key}")
             if debug_resolved:
                 st.caption("user name resolved via external key or profile name match")
@@ -1926,7 +2574,7 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
                     value=json.dumps(debug_read_model, indent=2, ensure_ascii=False, default=str),
                     height=220,
                     disabled=True,
-                    key="memory_debug_read_model_json",
+                    key=f"memory_debug_read_model_json_{debug_backend_label}_{debug_user_id}",
                 )
             except Exception as exc:
                 st.caption(f"Could not render read model JSON: {exc}")
@@ -1939,7 +2587,7 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
                     value="\n".join(debug_events[-120:]),
                     height=220,
                     disabled=True,
-                    key="memory_debug_events_log",
+                    key=f"memory_debug_events_log_{debug_user_id}",
                 )
             else:
                 st.caption("No memory operation events yet.")
@@ -1978,6 +2626,8 @@ with chat_col:
             started = time.perf_counter()
             status = "ok"
             usage_summary = ""
+            content_rendered = False
+            request_id = f"{agent_choice.lower().replace(' ', '-')}-{int(time.time() * 1000)}"
             agent_init_elapsed = 0.0
             model_call_elapsed = 0.0
             turn_debug_logs: list[str] = []
@@ -1987,7 +2637,7 @@ with chat_col:
 
             def _add_turn_debug(line: str) -> None:
                 safe_line = _redact_sensitive_text(line)
-                stamped = f"[{datetime.now(ZoneInfo(_browser_timezone_name())).strftime('%H:%M:%S')}] {safe_line}"
+                stamped = f"[{datetime.now(ZoneInfo(_browser_timezone_name())).strftime('%m/%d/%Y')}] {safe_line}"
                 turn_debug_logs.append(stamped)
                 logger.info("TURN_DEBUG %s", safe_line)
 
@@ -2131,6 +2781,7 @@ with chat_col:
                     _add_turn_debug(f"workflow latency_s={llm_elapsed:.2f}")
                 else:
                     logger.info("Running Fitness Nutrition agent")
+                    assistant_placeholder = st.empty()
                     _diag_system_prompt = (
                         "You are a fitness nutrition assistant with access to user profile, body metrics, and meal macro history. "
                         "When users ask about goals or trends, use tracked data first and ask clarifying questions if missing data."
@@ -2154,9 +2805,13 @@ with chat_col:
                             selected_model=fitness_model or model,
                             image_bytes=uploaded_food_image_bytes,
                             image_name=uploaded_food_image_name,
+                            assistant_placeholder=assistant_placeholder,
+                            request_id=request_id,
                             chat_client=fitness_chat_client,
+                            backend_cfg=_backend_cfg if _backend_provider_name else None,
                         )
                     )
+                    content_rendered = True
                     fitness_elapsed = time.perf_counter() - fitness_started
                     model_call_elapsed = fitness_elapsed
                     usage_parsed = _parse_usage_summary(usage_summary)
@@ -2164,7 +2819,7 @@ with chat_col:
                         f"fitness_run latency_s={fitness_elapsed:.2f} usage_input={usage_parsed['input']} usage_output={usage_parsed['output']} usage_total={usage_parsed['total']}"
                     )
                     try:
-                        model_snapshot = get_fitness_repository(_fitness_db_path()).get_read_model(fitness_user_id, metric_limit=6, meal_limit=6)
+                        model_snapshot = _load_fitness_snapshot(fitness_user_id, metric_limit=6, meal_limit=6, request_id=request_id)
                         _diag_context_data = model_snapshot
                         short_count = len([m for m in st.session_state.messages if m.get("role") in {"user", "assistant"}])
                         long_profile = len(model_snapshot.get("profile", {})) if isinstance(model_snapshot.get("profile"), dict) else 0
@@ -2192,7 +2847,8 @@ with chat_col:
                         f"context_window usage_unavailable configured_max_output_tokens={int(max_tokens)} est_input_tokens={_estimate_tokens_from_text(prompt)}"
                     )
 
-                st.markdown(content)
+                if not content_rendered:
+                    st.markdown(content)
                 debug_snapshot = turn_debug_logs if debug_enabled else []
                 st.session_state.messages.append(
                     {"role": "assistant", "content": content, "debug_logs": debug_snapshot}
@@ -2267,6 +2923,7 @@ with chat_col:
                     _input_tok = _du["input"] or _estimate_tokens_from_text(prompt)
                     _hist_est = max(0, _input_tok - _sys_est - _ctx_est)
                     _diag_record_turn(DiagnosticsTurn(
+                        request_id=request_id,
                         timestamp=datetime.now(timezone.utc).isoformat(),
                         agent=agent_choice,
                         model=model or "",

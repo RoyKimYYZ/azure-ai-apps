@@ -5,7 +5,7 @@
   },
   "model_by_agent": {
     "Agent1 Demo": "gpt-5-mini",
-    "Fitness Nutrition": "gpt-5-mini",
+    "Fitness Nutrition": "gpt-5.2-chat",
     "General Chat Assistant": "gpt-5.2-chat"
   }
 }

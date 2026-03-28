@@ -17,6 +17,7 @@ import streamlit as st
 
 MAX_TURNS_PER_AGENT = 200
 MAX_LOGS_PER_AGENT = 500
+MAX_PERF_EVENTS_PER_AGENT = 2000
 
 # ── Context-window sizes (tokens) per model ──────────────────────────
 CONTEXT_WINDOW_SIZES: dict[str, int] = {
@@ -52,6 +53,7 @@ def estimate_tokens(text: str) -> int:
 
 @dataclass
 class DiagnosticsTurn:
+    request_id: str
     timestamp: str
     agent: str
     model: str
@@ -71,6 +73,18 @@ class DiagnosticsTurn:
     errors: list[str] = field(default_factory=list)
 
 
+@dataclass
+class PerformanceEvent:
+    timestamp: str
+    agent: str
+    request_id: str
+    category: str
+    name: str
+    duration_ms: float
+    status: str
+    details: dict[str, Any] = field(default_factory=dict)
+
+
 # ── Thread-safe in-memory store via st.cache_resource ────────────────
 
 class _DiagnosticsStore:
@@ -82,7 +96,7 @@ class _DiagnosticsStore:
 
     def _ensure_agent(self, agent: str) -> dict[str, list]:
         return self._agents.setdefault(
-            agent, {"turns": [], "app_logs": [], "errors": []}
+            agent, {"turns": [], "app_logs": [], "errors": [], "performance_events": []}
         )
 
     def record_turn(self, turn: DiagnosticsTurn) -> None:
@@ -104,11 +118,18 @@ class _DiagnosticsStore:
             if len(agent_data["errors"]) > MAX_LOGS_PER_AGENT:
                 agent_data["errors"] = agent_data["errors"][-MAX_LOGS_PER_AGENT:]
 
+    def record_performance_event(self, event: PerformanceEvent) -> None:
+        with self._lock:
+            agent_data = self._ensure_agent(event.agent)
+            agent_data["performance_events"].append(asdict(event))
+            if len(agent_data["performance_events"]) > MAX_PERF_EVENTS_PER_AGENT:
+                agent_data["performance_events"] = agent_data["performance_events"][-MAX_PERF_EVENTS_PER_AGENT:]
+
     def get_agent_diagnostics(self, agent: str) -> dict[str, Any]:
         with self._lock:
             data = self._agents.get(agent)
             if data is None:
-                return {"turns": [], "app_logs": [], "errors": []}
+                return {"turns": [], "app_logs": [], "errors": [], "performance_events": []}
             # Return a shallow copy so readers don't hold the lock.
             return {k: list(v) for k, v in data.items()}
 
@@ -119,7 +140,7 @@ class _DiagnosticsStore:
     def clear_agent(self, agent: str) -> None:
         with self._lock:
             if agent in self._agents:
-                self._agents[agent] = {"turns": [], "app_logs": [], "errors": []}
+                self._agents[agent] = {"turns": [], "app_logs": [], "errors": [], "performance_events": []}
 
 
 @st.cache_resource
@@ -127,23 +148,63 @@ def _get_store() -> _DiagnosticsStore:
     return _DiagnosticsStore()
 
 
+def _compat_agent_payload(agent_data: dict[str, list] | None) -> dict[str, list]:
+    payload = agent_data if isinstance(agent_data, dict) else {}
+    payload.setdefault("turns", [])
+    payload.setdefault("app_logs", [])
+    payload.setdefault("errors", [])
+    payload.setdefault("performance_events", [])
+    return payload
+
+
+def _compat_store() -> Any:
+    store = _get_store()
+    agents = getattr(store, "_agents", None)
+    if isinstance(agents, dict):
+        for agent, agent_data in list(agents.items()):
+            agents[agent] = _compat_agent_payload(agent_data)
+    return store
+
+
 # ── Public API (unchanged signatures) ────────────────────────────────
 
 def record_turn(turn: DiagnosticsTurn) -> None:
-    _get_store().record_turn(turn)
+    _compat_store().record_turn(turn)
 
 
 def record_log(agent: str, message: str, level: str = "INFO") -> None:
-    _get_store().record_log(agent, message, level)
+    _compat_store().record_log(agent, message, level)
+
+
+def record_performance_event(event: PerformanceEvent) -> None:
+    store = _compat_store()
+    if hasattr(store, "record_performance_event"):
+        try:
+            store.record_performance_event(event)
+            return
+        except Exception:
+            pass
+
+    lock = getattr(store, "_lock", None)
+    agents = getattr(store, "_agents", None)
+    if lock is None or not isinstance(agents, dict):
+        return
+
+    with lock:
+        agent_data = _compat_agent_payload(agents.get(event.agent))
+        agent_data["performance_events"].append(asdict(event))
+        if len(agent_data["performance_events"]) > MAX_PERF_EVENTS_PER_AGENT:
+            agent_data["performance_events"] = agent_data["performance_events"][-MAX_PERF_EVENTS_PER_AGENT:]
+        agents[event.agent] = agent_data
 
 
 def get_agent_diagnostics(agent: str) -> dict[str, Any]:
-    return _get_store().get_agent_diagnostics(agent)
+    return _compat_store().get_agent_diagnostics(agent)
 
 
 def get_all_agents() -> list[str]:
-    return _get_store().get_all_agents()
+    return _compat_store().get_all_agents()
 
 
 def clear_agent_diagnostics(agent: str) -> None:
-    _get_store().clear_agent(agent)
+    _compat_store().clear_agent(agent)

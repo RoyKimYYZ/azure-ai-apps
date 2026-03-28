@@ -6,6 +6,8 @@ import logging
 import os
 import sqlite3
 import struct
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +24,9 @@ logger = logging.getLogger(__name__)
 _SKIP_UPDATE = object()
 SQL_COPT_SS_ACCESS_TOKEN = 1256
 AZURE_SQL_TOKEN_SCOPE = "https://database.windows.net/.default"
+_AZURE_SQL_TOKEN_REFRESH_SKEW_SECONDS = 300
+_FITNESS_REPOSITORY_CACHE: dict[tuple[Any, ...], Any] = {}
+_FITNESS_REPOSITORY_CACHE_LOCK = threading.Lock()
 
 
 def utc_now_iso() -> str:
@@ -56,6 +61,34 @@ def _json_default(value: Any) -> Any:
 
 def _to_json_text(value: Any) -> str:
     return json.dumps(value, default=_json_default, ensure_ascii=False)
+
+
+def build_fitness_context_instructions(
+    read_model: dict[str, Any] | None,
+    *,
+    default_context_prompt: str = "",
+) -> str:
+    model = read_model or {}
+    profile = model.get("profile", {})
+    metrics = model.get("recent_body_metrics", [])
+    meals = model.get("recent_meals", [])
+    if not profile and not metrics and not meals:
+        return ""
+
+    strip_meal_keys = {"llm_structured_output_json", "source_image_uri", "source_hash"}
+    meals_slim = [{key: value for key, value in meal.items() if key not in strip_meal_keys} for meal in meals]
+
+    profile_text = _to_json_text(profile)
+    metrics_text = _to_json_text(metrics)
+    meals_text = _to_json_text(meals_slim)
+    return (
+        f"{default_context_prompt}\n"
+        "Use this durable fitness memory context when responding.\n"
+        f"User profile: {profile_text}\n"
+        f"Recent body metrics: {metrics_text}\n"
+        f"Recent meals/macros: {meals_text}\n"
+        "If the user asks health or diet questions, ground your answer in these tracked values."
+    )
 
 
 def _row_to_dict(description: Any, row: Any) -> dict[str, Any]:
@@ -778,6 +811,18 @@ class AzureSqlFitnessMemoryRepository:
         self.encrypt = settings.azure_sql_encrypt
         self.trust_server_certificate = settings.azure_sql_trust_server_certificate
         self.connection_timeout = settings.azure_sql_connection_timeout
+        self._auth_lock = threading.RLock()
+        self._credential: Any | None = None
+        self._access_token = ""
+        self._access_token_expires_on = 0.0
+        self._connection_string = (
+            f"Driver={{{self.driver}}};"
+            f"Server=tcp:{self.server},1433;"
+            f"Database={self.database};"
+            f"Encrypt={'yes' if self.encrypt else 'no'};"
+            f"TrustServerCertificate={'yes' if self.trust_server_certificate else 'no'};"
+            f"Connection Timeout={self.connection_timeout};"
+        )
 
         if not self.database:
             raise ValueError("AZURE_SQL_DATABASE must be set when FITNESS_DB_BACKEND=azuresql")
@@ -795,6 +840,34 @@ class AzureSqlFitnessMemoryRepository:
                 raise ValueError(
                     "AZURE_SQL_ADMIN_USER and AZURE_SQL_ADMIN_PASSWORD must be set when AZURE_SQL_AUTH_MODE uses SQL password auth"
                 )
+
+    def _get_cached_credential(self, DefaultAzureCredential: Any) -> Any:
+        credential = self._credential
+        if credential is not None:
+            return credential
+        with self._auth_lock:
+            if self._credential is None:
+                self._credential = DefaultAzureCredential(
+                    managed_identity_client_id=self.settings.azure_client_id or None,
+                    exclude_interactive_browser_credential=False,
+                )
+            return self._credential
+
+    def _get_cached_access_token_struct(self, DefaultAzureCredential: Any) -> bytes:
+        now = time.time()
+        if self._access_token and now < self._access_token_expires_on - _AZURE_SQL_TOKEN_REFRESH_SKEW_SECONDS:
+            return _encode_sql_access_token(self._access_token)
+
+        with self._auth_lock:
+            now = time.time()
+            if self._access_token and now < self._access_token_expires_on - _AZURE_SQL_TOKEN_REFRESH_SKEW_SECONDS:
+                return _encode_sql_access_token(self._access_token)
+
+            credential = self._get_cached_credential(DefaultAzureCredential)
+            access_token = credential.get_token(AZURE_SQL_TOKEN_SCOPE)
+            self._access_token = access_token.token
+            self._access_token_expires_on = float(access_token.expires_on)
+            return _encode_sql_access_token(self._access_token)
 
     def _table(self, name: str) -> str:
         return f"[{self.schema}].[{name}]"
@@ -832,25 +905,19 @@ class AzureSqlFitnessMemoryRepository:
 
     def _conn(self) -> Any:
         pyodbc, DefaultAzureCredential = _import_azure_sql_runtime()
-        connection_string = (
-            f"Driver={{{self.driver}}};"
-            f"Server=tcp:{self.server},1433;"
-            f"Database={self.database};"
-            f"Encrypt={'yes' if self.encrypt else 'no'};"
-            f"TrustServerCertificate={'yes' if self.trust_server_certificate else 'no'};"
-            f"Connection Timeout={self.connection_timeout};"
-        )
+        pyodbc.pooling = True
         if self.auth_mode in {"adminpassword", "sqlpassword", "sql-password"}:
-            connection_string = f"{connection_string}UID={self.admin_user};PWD={self.admin_password};"
-            return pyodbc.connect(connection_string, autocommit=False)
+            return pyodbc.connect(
+                f"{self._connection_string}UID={self.admin_user};PWD={self.admin_password};",
+                autocommit=False,
+            )
 
-        credential = DefaultAzureCredential(
-            managed_identity_client_id=self.settings.azure_client_id or None,
-            exclude_interactive_browser_credential=False,
+        token_struct = self._get_cached_access_token_struct(DefaultAzureCredential)
+        return pyodbc.connect(
+            self._connection_string,
+            attrs_before={SQL_COPT_SS_ACCESS_TOKEN: token_struct},
+            autocommit=False,
         )
-        access_token = credential.get_token(AZURE_SQL_TOKEN_SCOPE).token
-        token_struct = _encode_sql_access_token(access_token)
-        return pyodbc.connect(connection_string, attrs_before={SQL_COPT_SS_ACCESS_TOKEN: token_struct}, autocommit=False)
 
     def _ensure_user(self, cursor: Any, user_id: str) -> None:
         now = utc_now_iso()
@@ -1242,35 +1309,38 @@ class AzureSqlFitnessMemoryRepository:
 
 
 class DatabaseContextProvider(ContextProvider):
-    def __init__(self, repository: FitnessMemoryRepository, user_id: str, *, metric_limit: int = 5, meal_limit: int = 5) -> None:
+    def __init__(
+        self,
+        repository: FitnessMemoryRepository,
+        user_id: str,
+        *,
+        metric_limit: int = 5,
+        meal_limit: int = 5,
+        read_model: dict[str, Any] | None = None,
+        context_instructions: str | None = None,
+    ) -> None:
         self.repository = repository
         self.user_id = user_id
         self.metric_limit = metric_limit
         self.meal_limit = meal_limit
+        self.read_model = read_model
+        self.context_instructions = context_instructions
 
     async def invoking(self, messages: Any, **kwargs: Any) -> Context:
-        model = self.repository.get_read_model(self.user_id, metric_limit=self.metric_limit, meal_limit=self.meal_limit)
-        profile = model.get("profile", {})
-        metrics = model.get("recent_body_metrics", [])
-        meals = model.get("recent_meals", [])
-        if not profile and not metrics and not meals:
-            return Context()
+        if self.context_instructions is not None:
+            return Context(instructions=self.context_instructions) if self.context_instructions else Context()
 
-        # Strip the large raw LLM blob – it is internal structured output, not useful context for the model.
-        _STRIP_MEAL_KEYS = {"llm_structured_output_json", "source_image_uri", "source_hash"}
-        meals_slim = [{k: v for k, v in m.items() if k not in _STRIP_MEAL_KEYS} for m in meals]
-
-        profile_text = _to_json_text(profile)
-        metrics_text = _to_json_text(metrics)
-        meals_text = _to_json_text(meals_slim)
-        instructions = (
-            f"{self.DEFAULT_CONTEXT_PROMPT}\n"
-            "Use this durable fitness memory context when responding.\n"
-            f"User profile: {profile_text}\n"
-            f"Recent body metrics: {metrics_text}\n"
-            f"Recent meals/macros: {meals_text}\n"
-            "If the user asks health or diet questions, ground your answer in these tracked values."
+        model = self.read_model or self.repository.get_read_model(
+            self.user_id,
+            metric_limit=self.metric_limit,
+            meal_limit=self.meal_limit,
         )
+        instructions = build_fitness_context_instructions(
+            model,
+            default_context_prompt=self.DEFAULT_CONTEXT_PROMPT,
+        )
+        if not instructions:
+            return Context()
         return Context(instructions=instructions)
 
 
@@ -1286,7 +1356,33 @@ def get_fitness_repository(db_path: str | Path | None = None, *, settings: Setti
     backend = active_settings.fitness_db_backend
     if backend == "sqlite":
         path = Path(db_path) if db_path is not None else active_settings.db_path
-        return SQLiteFitnessMemoryRepository(path)
+        cache_key = ("sqlite", str(path.expanduser().resolve()))
+        with _FITNESS_REPOSITORY_CACHE_LOCK:
+            cached = _FITNESS_REPOSITORY_CACHE.get(cache_key)
+            if cached is None:
+                cached = SQLiteFitnessMemoryRepository(path)
+                _FITNESS_REPOSITORY_CACHE[cache_key] = cached
+            return cached
     if backend in {"azuresql", "azure_sql", "azure-sql"}:
-        return AzureSqlFitnessMemoryRepository(active_settings)
+        cache_key = (
+            "azuresql",
+            active_settings.azure_sql_server,
+            active_settings.azure_sql_database,
+            active_settings.azure_sql_schema,
+            active_settings.azure_sql_driver,
+            active_settings.azure_sql_auth_mode,
+            active_settings.azure_sql_admin_user,
+            active_settings.azure_sql_admin_password,
+            active_settings.azure_sql_encrypt,
+            active_settings.azure_sql_trust_server_certificate,
+            active_settings.azure_sql_connection_timeout,
+            active_settings.azure_client_id,
+            active_settings.azure_tenant_id,
+        )
+        with _FITNESS_REPOSITORY_CACHE_LOCK:
+            cached = _FITNESS_REPOSITORY_CACHE.get(cache_key)
+            if cached is None:
+                cached = AzureSqlFitnessMemoryRepository(active_settings)
+                _FITNESS_REPOSITORY_CACHE[cache_key] = cached
+            return cached
     raise ValueError(f"Unsupported FITNESS_DB_BACKEND={backend}")
