@@ -1,0 +1,225 @@
+# ─────────────────────────────────────────────────
+# AgentFramework – unified application configuration
+# ─────────────────────────────────────────────────
+# Secrets are NEVER stored here.  Fields ending in *_env hold the NAME
+# of the environment variable that carries the secret value.
+# ─────────────────────────────────────────────────
+
+# ── App metadata ────────────────────────────────
+app:
+  name: AgentFramework Chatbot
+  version: "0.1.0"
+  environment: dev
+
+# ── Runtime / server ────────────────────────────
+runtime:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1
+  timeout: 60
+  retry:
+    rate_limit_base_delay: 60
+    rate_limit_max_delay: 300
+  stream_tokens: true
+
+# ── Logging ─────────────────────────────────────
+logging:
+  level: INFO            # DEBUG | INFO | WARNING | ERROR
+  to_console: true
+  to_file: false
+  file_path: logs/agentframework.log
+  color: true
+
+# ── Observability (OpenTelemetry / App Insights) ─
+observability:
+  enabled: false
+  service_name: agentframework
+  appinsights_connection_string_env: APPINSIGHTS_CONNECTION_STRING
+  otlp_endpoint_env: OTEL_EXPORTER_OTLP_ENDPOINT
+
+# ── Database ────────────────────────────────────
+database:
+  default_backend: azuresql   # sqlite | azuresql
+  sqlite:
+    path: agentframework.db
+  azure_sql:
+    server_env: AZURE_SQL_SERVER
+    database_env: AZURE_SQL_DATABASE
+    schema: dbo
+    driver: "ODBC Driver 18 for SQL Server"
+    auth_mode: sqlpassword
+    admin_user_env: AZURE_SQL_ADMIN_USER
+    admin_password_env: AZURE_SQL_ADMIN_PASSWORD
+    encrypt: true
+    trust_server_certificate: false
+    connection_timeout: 30
+
+# ── Azure services ──────────────────────────────
+azure:
+  identity:
+    client_id_env: AZURE_CLIENT_ID
+    tenant_id_env: AZURE_TENANT_ID
+    client_secret_env: AZURE_CLIENT_SECRET
+  openai:
+    endpoint_env: AZURE_OPENAI_ENDPOINT
+    api_key_env: AZURE_OPENAI_API_KEY
+    chat_deployment: gpt-5.2-chat
+    embedding_deployment: text-embedding-ada-002
+    responses_deployment: gpt-5.2-responses
+    api_version_env: AZURE_OPENAI_API_VERSION
+
+# ── AI providers, agents, defaults ──────────────
+ai:
+  providers:
+    - name: AI Foundry
+      endpoint_env: AI_FOUNDRY_ENDPOINT
+      api_key_env: AI_FOUNDRY_API_KEY
+      models: [gpt-5.2-chat, DeepSeek-V3.2, gpt-5-mini]
+      model_env: AI_FOUNDRY_MODEL
+      default_model: gpt-5.2-chat
+
+    - name: KAITO
+      endpoint_env: KAITO_INFERENCE_ENDPOINT
+      models: [phi-4-mini-instruct]
+      default_endpoint: http://workspace-phi-4-mini.default.svc.cluster.local:80/v1/chat/completions
+      default_model: phi-4-mini-instruct
+
+    - name: KAITO RAGEngine
+      endpoint_env: KAITO_RAGENGINE_ENDPOINT
+      models: [phi-4-mini-instruct]
+      default_endpoint: http://ragengine-example.default.svc.cluster.local:80/v1/chat/completions
+      default_model: phi-4-mini-instruct
+      index_name_env: KAITO_RAGENGINE_INDEX
+      default_index_name: rag_index
+      embedding_model: BAAI/bge-small-en-v1.5
+
+    - name: KAITO phi-4
+      models: [phi-4]
+      default_endpoint: https://ai.roykim.ca/phi4
+      default_model: phi-4
+
+    - name: KAITO phi3.5 vision
+      models: [phi3.5 vision]
+      default_endpoint: https://ai.roykim.ca/phi35vision
+      default_model: phi3.5 vision
+      request_model: microsoft/Phi-3.5-vision-instruct
+
+  agents:
+    - name: General Chat Assistant
+      provider: AI Foundry
+      model: gpt-5.2-chat
+      description: General-purpose AI assistant via AI Foundry
+      prompt_file: prompts/assistant_jinja.yaml
+
+    - name: Kaito Assistant
+      provider: KAITO
+      model: phi-4-mini-instruct
+      description: Chat via KAITO inference endpoint
+
+    - name: KAITO RAG Assistant
+      provider: KAITO RAGEngine
+      model: phi-4-mini-instruct
+      description: RAG via KAITO RAGEngine
+
+    - name: Fitness Nutrition
+      provider: AI Foundry
+      description: Fitness & nutrition tracking with durable memory
+      available_providers:
+        - name: AI Foundry
+        - name: AKS KAITO
+          models: [phi-4, phi-4-mini-instruct, phi3.5 vision]
+      extra_models: [phi-4, phi-4-mini-instruct, phi3.5 vision]
+      model_backends:
+        phi-4: KAITO phi-4
+        phi-4-mini-instruct: KAITO
+        "phi3.5 vision": KAITO phi3.5 vision
+
+    - name: Agent1 Demo
+      provider: AI Foundry
+      description: Demo agent with MCP and prompt library
+
+  defaults:
+    temperature: 0.2
+    temperature_min: 0.0
+    temperature_max: 1.0
+    temperature_step: 0.05
+    top_p: 1.0
+    top_p_min: 0.0
+    top_p_max: 1.0
+    top_p_step: 0.05
+    max_tokens: 512
+    max_tokens_min: 1
+    max_tokens_max: 4096
+    verify_tls: true
+    debug_mode: true
+    debug_log_max_lines: 200
+    extraction_temperature: 1.0
+
+# ── UI settings ─────────────────────────────────
+ui:
+  theme:
+    page_title: AI Foundry Chatbot
+    page_icon: "🤖"
+    layout: wide
+    sidebar_state: expanded
+
+  labels:
+    agent_selector: Agent
+    provider_selector: AI Provider
+    model_selector: Model
+    temperature: Temperature
+    max_tokens: Max tokens
+    top_p: Top P
+    verify_tls: Verify TLS
+    debug_mode: Debug mode
+    new_chat: "🗑️ New chat"
+    user_name: User name
+    refresh_memory: Refresh memory snapshot
+    food_upload: "Upload food image (optional)"
+    user_profile: User Profile
+    prompt_library: Prompt library
+    system_prompt: System prompt
+    template_editor: Template editor
+    diagnostics_link: "📊 Open Diagnostics"
+    diagnostics_title: Agent Diagnostics
+    diagnostics_icon: "📊"
+
+  sidebar:
+    show_completion_metrics: true
+    metrics_max_entries: 50
+    show_diagnostics_link: true
+
+  chat:
+    welcome_message: "Hello! How can I help you today?"
+    user_avatar: "🧑"
+    assistant_avatar: "🤖"
+    max_display_messages: 100
+    message_truncate_length: 120
+    error_truncate_length: 140
+
+  fitness:
+    recent_meals_count: 6
+    recent_messages_count: 6
+    message_truncate_length: 120
+    accepted_image_types: [png, jpg, jpeg, webp, bmp]
+    default_food_prompt: "What are the macronutrients in this meal?"
+    default_user_id: default-user
+
+  performance:
+    max_events: 120
+    auto_refresh_interval_ms: 5000
+
+# ── MCP (Model Context Protocol) servers ────────
+mcp:
+  github:
+    token_env: GITHUB_TOKEN
+    alt_token_env: GH_PAT
+    api_base: https://api.github.com
+    max_list_results: 30
+    max_search_results: 10
+    max_file_bytes: 102400
+    max_return_lines: 500
+
+# ── Admin page ──────────────────────────────────
+admin:
+  enabled: true
