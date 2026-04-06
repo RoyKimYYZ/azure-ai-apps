@@ -10,25 +10,20 @@ from azure.identity import AzureCliCredential
 from dotenv import load_dotenv
 from jinja2 import Template
 
-from app_settings import Settings
+from config import get_config, resolve_env, resolve_provider_secrets
 from ai_chat_client import KaitoChatClient
 from run_utils import run_with_retry
 from logging_colors import ColorLogFormatter, strip_ansi, supports_color
 from agent1_demo import agent1
 
 
-def _str_to_bool(value: str | None, default: bool) -> bool:
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
 def configure_logging() -> None:
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-    log_to_console = _str_to_bool(os.getenv("LOG_TO_CONSOLE"), True)
-    log_to_file = _str_to_bool(os.getenv("LOG_TO_FILE"), False)
-    log_file_path = os.getenv("LOG_FILE", "agentframework.log")
-    log_color = _str_to_bool(os.getenv("LOG_COLOR"), True) and supports_color(sys.stdout)
+    log_cfg = get_config().logging
+    log_level = log_cfg.level.upper()
+    log_to_console = log_cfg.to_console
+    log_to_file = log_cfg.to_file
+    log_file_path = log_cfg.file_path
+    log_color = log_cfg.color and supports_color(sys.stdout)
 
     handlers: list[logging.Handler] = []
     fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -119,11 +114,12 @@ async def azure_foundry_general_agent() -> None:
 
     model_block = prompt.get("model", {})
     prompt_model_id = model_block.get("id") if isinstance(model_block, dict) else model_block
-    model_id = os.getenv("CHAT_MODEL") or prompt_model_id or Settings().azure_openai_chat_deployment
+    cfg = get_config()
+    model_id = os.getenv("CHAT_MODEL") or prompt_model_id or cfg.azure.openai.chat_deployment
     if not model_id:
         raise ValueError("Chat model is required. Set CHAT_MODEL or provide model in the prompt.")
 
-    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT") or getattr(Settings(), "azure_openai_endpoint", None)
+    endpoint = resolve_env(cfg.azure.openai.endpoint_env)
     if isinstance(endpoint, str):
         endpoint = endpoint.strip().strip('"').strip("'").strip()
     client_kwargs = {"endpoint": endpoint} if endpoint else {}
@@ -162,15 +158,19 @@ async def kaito_agent() -> None:
 
     model_block = prompt.get("model", {})
     model_id = model_block.get("id") if isinstance(model_block, dict) else model_block
-    model_id = model_id or os.getenv("KAITO_MODEL", "phi-4-mini-instruct")
+    kaito_prov = next((p for p in get_config().ai.providers if p.name == "KAITO"), None)
+    if kaito_prov:
+        _resolved = resolve_provider_secrets(kaito_prov)
+        model_id = model_id or _resolved.default_model or "phi-4-mini-instruct"
+        endpoint = _resolved.endpoint
+        api_key = _resolved.api_key or None
+    else:
+        model_id = model_id or "phi-4-mini-instruct"
+        endpoint = "http://workspace-phi-4-mini.default.svc.cluster.local:80/v1/chat/completions"
+        api_key = None
     if not model_id:
         raise ValueError("KAITO model is required. Set KAITO_MODEL or provide model in the prompt.")
     logger.info("KAITO model selected: %s", model_id)
-
-    endpoint = os.getenv("KAITO_INFERENCE_ENDPOINT")
-    if not endpoint:
-        endpoint = "http://workspace-phi-4-mini.default.svc.cluster.local:80/v1/chat/completions"
-    api_key = os.getenv("KAITO_API_KEY") or None
     logger.debug("KAITO endpoint configured: %s", bool(endpoint))
     logger.debug("KAITO api key configured: %s", bool(api_key))
 
@@ -215,13 +215,12 @@ async def kaito_ragengine_bge_small_agent(
         User prompt ──► RAGEngine ──► vector search (bge-small) ──►
         retrieved context + prompt ──► phi-4-mini LLM ──► grounded response
 
-    Environment variables:
-        KAITO_RAGENGINE_ENDPOINT   Base URL of the RAGEngine K8s service.
-        KAITO_RAGENGINE_API_KEY    Optional bearer token (cluster-internal
-                                   deployments typically need none).
-        KAITO_RAGENGINE_INDEX      Default index name for RAG queries.
-        KAITO_MODEL                Model name reported by the backend
-                                   (default: phi-4-mini-instruct).
+    Configuration:
+        Settings are read from ``appconfig.yaml`` via the ``config`` package.
+        The "KAITO RAGEngine" provider entry supplies the endpoint, API key,
+        index name, and default model.  Environment variables referenced in
+        the provider (``KAITO_RAGENGINE_ENDPOINT``, ``KAITO_RAGENGINE_API_KEY``,
+        ``KAITO_RAGENGINE_INDEX``) are resolved automatically.
     """
     logger.info("Starting KAITO RAGEngine agent")
     load_dotenv()
@@ -241,23 +240,26 @@ async def kaito_ragengine_bge_small_agent(
         {"data_input": data_input},
     )
 
-    # Model – the inference model behind the RAGEngine
+    # Model & provider – resolved from config
     model_block = prompt.get("model", {})
     model_id = model_block.get("id") if isinstance(model_block, dict) else model_block
-    model_id = model_id or os.getenv("KAITO_MODEL", "phi-4-mini-instruct")
-    logger.info("RAGEngine inference model: %s", model_id)
-
-    # Endpoint – the RAGEngine service (NOT the raw inference workspace)
-    endpoint = os.getenv("KAITO_RAGENGINE_ENDPOINT")
-    if not endpoint:
-        # TODO: Replace with your actual RAGEngine service URL after deployment
+    rag_prov = next(
+        (p for p in get_config().ai.providers if p.name == "KAITO RAGEngine"), None
+    )
+    if rag_prov:
+        _resolved = resolve_provider_secrets(rag_prov)
+        model_id = model_id or _resolved.default_model or "phi-4-mini-instruct"
+        endpoint = _resolved.endpoint
+        api_key = _resolved.api_key or None
+        rag_index = index_name or _resolved.index_name or "rag_index"
+    else:
+        model_id = model_id or "phi-4-mini-instruct"
         endpoint = "http://<ragengine-service-name>.default.svc.cluster.local:80"
-    api_key = os.getenv("KAITO_RAGENGINE_API_KEY") or None
+        api_key = None
+        rag_index = index_name or "rag_index"
+    logger.info("RAGEngine inference model: %s", model_id)
     logger.debug("RAGEngine endpoint: %s", endpoint)
     logger.debug("RAGEngine api key configured: %s", bool(api_key))
-
-    # Index name – which document index to ground against
-    rag_index = index_name or os.getenv("KAITO_RAGENGINE_INDEX", "rag_index")
     logger.info("RAGEngine index_name: %s", rag_index)
 
     chat_client = KaitoChatClient(

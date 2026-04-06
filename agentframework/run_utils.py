@@ -1,8 +1,8 @@
 import asyncio
-import os
 import random
 
 from agent_framework import ChatAgent, AgentRunResponse, UsageContent, UsageDetails
+from config import get_config
 from openai import RateLimitError
 
 
@@ -15,8 +15,9 @@ def format_usage(usage: UsageDetails) -> str:
 
 
 def get_backoff_seconds(attempt: int) -> float:
-    base = float(os.getenv("RATE_LIMIT_BASE_DELAY", "60"))
-    max_delay = float(os.getenv("RATE_LIMIT_MAX_DELAY", "300"))
+    cfg = get_config()
+    base = cfg.runtime.retry.rate_limit_base_delay
+    max_delay = cfg.runtime.retry.rate_limit_max_delay
     exp = min(max_delay, base * (2 ** (attempt - 1)))
     jitter = random.uniform(0, base * 0.1)
     return exp + jitter
@@ -26,7 +27,7 @@ async def run_with_retry(agent: ChatAgent, *args, max_retries: int = 5, **kwargs
     for attempt in range(1, max_retries + 1):
         try:
             response = await agent.run(*args, **kwargs)
-            if os.getenv("STREAM_TOKENS", "1") == "1" and getattr(response, "usage_details", None):
+            if get_config().runtime.stream_tokens and getattr(response, "usage_details", None):
                 print(f"Tokens: {format_usage(response.usage_details)}")
             return response
         except RateLimitError:
@@ -46,14 +47,14 @@ async def run_with_stream(agent: ChatAgent, messages, *, max_retries: int = 5, *
             async for update in agent.run_stream(messages, **kwargs):
                 if getattr(update, "text", None):
                     print(update.text, end="", flush=True)
-                if os.getenv("STREAM_TOKENS", "1") == "1":
+                if get_config().runtime.stream_tokens:
                     usage_chunks = [c for c in getattr(update, "contents", []) if isinstance(c, UsageContent)]
                     for usage_content in usage_chunks:
                         print(f"\nTokens: {format_usage(usage_content.details)}")
                 response_updates.append(update)
             print()
             response = AgentRunResponse.from_agent_run_response_updates(response_updates)
-            if os.getenv("STREAM_TOKENS", "1") == "1" and getattr(response, "usage_details", None):
+            if get_config().runtime.stream_tokens and getattr(response, "usage_details", None):
                 print(f"Tokens: {format_usage(response.usage_details)}")
             return response
         except RateLimitError:

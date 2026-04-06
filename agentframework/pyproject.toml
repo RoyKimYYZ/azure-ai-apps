@@ -23,6 +23,7 @@ dev = [
     "mypy>=1.19.1",
     "ruff>=0.14.14",
     "agent-framework",
+    "pytest>=9.0.2",
 ]
 [tool.ruff]  # Ruff configuration table (Python linter/formatter)
 

@@ -17,7 +17,13 @@ _CHATBOT_DIR = str(Path(__file__).resolve().parent.parent)
 if _CHATBOT_DIR not in sys.path:
     sys.path.insert(0, _CHATBOT_DIR)
 
+# Ensure the project root is importable so we can reach the config package.
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import streamlit as st  # noqa: E402
+from config import get_config  # noqa: E402
 from diagnostics_store import (  # noqa: E402
     get_agent_diagnostics,
     get_all_agents,
@@ -27,7 +33,12 @@ from diagnostics_store import (  # noqa: E402
 )
 
 # ── Page config ──────────────────────────────────────────────────────
-st.set_page_config(page_title="Agent Diagnostics", page_icon="📊", layout="wide")
+_cfg = get_config()
+st.set_page_config(
+    page_title=_cfg.ui.labels.diagnostics_title,
+    page_icon=_cfg.ui.labels.diagnostics_icon,
+    layout="wide",
+)
 
 # Hide the default Streamlit multi-page sidebar nav
 st.markdown(
@@ -62,7 +73,7 @@ with st.sidebar:
 # ── Auto-refresh via JS ─────────────────────────────────────────────
 if auto_refresh:
     st.markdown(
-        "<script>setTimeout(function(){window.location.reload()},5000);</script>",
+        f"<script>setTimeout(function(){{window.location.reload()}},{_cfg.ui.performance.auto_refresh_interval_ms});</script>",
         unsafe_allow_html=True,
     )
 

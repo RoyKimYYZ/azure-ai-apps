@@ -29,6 +29,8 @@ load_dotenv()
 
 LOG_LEVEL_ENV = "LOG_LEVEL"
 DEBUG_LOG_MAX_LINES_ENV = "DEBUG_LOG_MAX_LINES"
+
+# Deferred import – config package is on sys.path after PROJECT_ROOT is added below.
 _FITNESS_READ_MODEL_CACHE: dict[tuple[str, ...], dict[str, Any]] = {}
 _FITNESS_READ_MODEL_CACHE_LOCK = threading.Lock()
 
@@ -91,6 +93,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from config import get_config  # noqa: E402
+
 from agent_framework import AgentRunResponse, ChatAgent, ChatMessage, DataContent, TextContent
 from agent_framework.azure import AzureOpenAIChatClient
 from azure.identity import AzureCliCredential
@@ -120,7 +124,7 @@ from fitness_background_persistence import (
     FitnessPersistenceRequest,
     schedule_fitness_persistence,
 )
-CONFIG_PATH = Path(__file__).parent / "config.yaml"
+_CFG = get_config()
 _FITNESS_AGENT_NAME = "Fitness Nutrition"
 
 
@@ -139,10 +143,20 @@ def _split_models(value: str | list[str] | None) -> list[str]:
 
 
 def _load_chatbot_config() -> dict:
-    if not CONFIG_PATH.exists():
-        return {"providers": [], "agents": [], "ui": {}}
-    with CONFIG_PATH.open("r", encoding="utf-8") as handle:
-        return yaml.safe_load(handle) or {"providers": [], "agents": [], "ui": {}}
+    """Return the chatbot section of the unified config as a plain dict.
+
+    The returned dict has the same shape the old chatbot/config.yaml
+    produced so that downstream code (PROVIDERS, AGENTS, UI_CONFIG)
+    continues to work unchanged.
+    """
+    cfg = get_config()
+    providers = [p.model_dump(by_alias=True) for p in cfg.ai.providers]
+    agents = [a.model_dump(by_alias=True) for a in cfg.ai.agents]
+    ui = {
+        "log_level_env": "LOG_LEVEL",
+        "debug_log_max_lines_env": "DEBUG_LOG_MAX_LINES",
+    }
+    return {"providers": providers, "agents": agents, "ui": ui}
 
 
 def _normalize_endpoint(endpoint: str) -> str:
@@ -433,8 +447,9 @@ def _append_agent1_trace(direction: str, method: str, payload: dict[str, Any] | 
             "payload": payload or {},
         }
     )
-    if len(events) > 120:
-        del events[:-120]
+    _perf_max = get_config().ui.performance.max_events
+    if len(events) > _perf_max:
+        del events[:-_perf_max]
 
 
 def _render_agent1_trace(placeholder: Any | None = None) -> None:
@@ -1786,7 +1801,7 @@ def _build_fitness_runtime(
         context_providers=[context_provider],
         tools=[],
         max_completion_tokens=800,
-        temperature=1.0,
+        temperature=get_config().ai.defaults.extraction_temperature,
     )
     return agent, repo, session_key, agent_name
 
@@ -1981,7 +1996,8 @@ async def _run_fitness_turn(
     return content, usage_summary
 
 
-st.set_page_config(page_title="AI Foundry Chatbot", page_icon="🤖", layout="wide")
+_ui = get_config().ui
+st.set_page_config(page_title=_ui.theme.page_title, page_icon=_ui.theme.page_icon, layout=_ui.theme.layout)
 
 st.markdown(
         """
@@ -2133,11 +2149,16 @@ with st.sidebar:
         if isinstance(_ap_models, list) and _ap_models:
             models = _split_models(_ap_models)
         else:
-            models_env = provider_config.get("models_env")
-            if isinstance(models_env, list):
-                models = _split_models(models_env)
+            # Try the direct models list first, then models_env, then model_env fallback
+            _direct_models = provider_config.get("models")
+            if isinstance(_direct_models, list) and _direct_models:
+                models = _split_models(_direct_models)
             else:
-                models = _split_models(os.getenv(models_env)) if models_env else []
+                models_env = provider_config.get("models_env")
+                if isinstance(models_env, list):
+                    models = _split_models(models_env)
+                else:
+                    models = _split_models(os.getenv(models_env)) if models_env else []
             model_env = provider_config.get("model_env")
             provider_default_model = provider_config.get("default_model", "")
             if not models:
@@ -2152,11 +2173,16 @@ with st.sidebar:
 
         st.text_input("Provider", provider_name or "", disabled=True)
 
-        models_env = provider_config.get("models_env")
-        if isinstance(models_env, list):
-            models = _split_models(models_env)
+        # Try the direct models list first, then models_env, then model_env fallback
+        _direct_models = provider_config.get("models")
+        if isinstance(_direct_models, list) and _direct_models:
+            models = _split_models(_direct_models)
         else:
-            models = _split_models(os.getenv(models_env)) if models_env else []
+            models_env = provider_config.get("models_env")
+            if isinstance(models_env, list):
+                models = _split_models(models_env)
+            else:
+                models = _split_models(os.getenv(models_env)) if models_env else []
 
         model_env = provider_config.get("model_env")
         provider_default_model = provider_config.get("default_model", "")
@@ -2202,11 +2228,13 @@ with st.sidebar:
         ui_prefs["model_by_agent"] = model_by_agent
         _save_ui_prefs(ui_prefs)
 
-    temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
-    max_tokens = st.number_input("Max tokens", min_value=1, max_value=4096, value=512, step=1)
-    top_p = st.slider("Top P", 0.0, 1.0, 1.0, 0.05)
-    verify_tls = st.checkbox("Verify TLS", value=True)
-    debug_enabled = st.checkbox("Debug mode", value=True)
+    _ai_defs = get_config().ai.defaults
+    _labels = get_config().ui.labels
+    temperature = st.slider(_labels.temperature, _ai_defs.temperature_min, _ai_defs.temperature_max, _ai_defs.temperature, _ai_defs.temperature_step)
+    max_tokens = st.number_input(_labels.max_tokens, min_value=_ai_defs.max_tokens_min, max_value=_ai_defs.max_tokens_max, value=_ai_defs.max_tokens, step=1)
+    top_p = st.slider(_labels.top_p, _ai_defs.top_p_min, _ai_defs.top_p_max, _ai_defs.top_p, _ai_defs.top_p_step)
+    verify_tls = st.checkbox(_labels.verify_tls, value=_ai_defs.verify_tls)
+    debug_enabled = st.checkbox(_labels.debug_mode, value=_ai_defs.debug_mode)
 
     if debug_enabled:
         _ensure_debug_log_handler()
@@ -2227,7 +2255,7 @@ with st.sidebar:
     metrics_container = st.container(height=220)
     with metrics_container:
         if st.session_state.metrics_log:
-            for entry in reversed(st.session_state.metrics_log[-50:]):
+            for entry in reversed(st.session_state.metrics_log[-get_config().ui.sidebar.metrics_max_entries:]):
                 st.caption(_format_metrics_entry(entry))
         else:
             st.caption("No completions yet.")
@@ -2238,7 +2266,7 @@ with st.sidebar:
         f'<a href="{_diag_url}" target="_blank" '
         f'style="display:inline-flex;align-items:center;gap:0.35rem;'
         f'font-size:0.85rem;color:#4a9eff;text-decoration:none;">'
-        f'📊 Open Diagnostics</a>',
+        f'{get_config().ui.labels.diagnostics_link}</a>',
         unsafe_allow_html=True,
     )
 
@@ -2397,8 +2425,8 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
         try:
             read_model = _load_fitness_snapshot(
                 memory_user_id,
-                metric_limit=6,
-                meal_limit=6,
+                metric_limit=get_config().ui.fitness.recent_meals_count,
+                meal_limit=get_config().ui.fitness.recent_meals_count,
                 force_refresh=force_snapshot_refresh,
             )
             profile = read_model.get("profile", {}) or {}
@@ -2483,9 +2511,10 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
                 st.caption("No profile found for this user.")
 
         st.divider()
+        _fit_cfg = get_config().ui.fitness
         uploaded_food_image = st.file_uploader(
-            "Upload food image (optional)",
-            type=["png", "jpg", "jpeg", "webp", "bmp"],
+            get_config().ui.labels.food_upload,
+            type=_fit_cfg.accepted_image_types,
             accept_multiple_files=False,
             help="Attach an image; it will be included with your next chat message.",
             key="fitness_food_upload",
@@ -2497,18 +2526,18 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
             upload_marker = f"{uploaded_food_image_name}:{len(uploaded_food_image_bytes)}"
             if st.session_state.get("fitness_last_upload_marker") != upload_marker:
                 st.session_state["fitness_last_upload_marker"] = upload_marker
-                st.session_state[chat_input_key] = "What are the macronutrients in this meal?"
+                st.session_state[chat_input_key] = get_config().ui.fitness.default_food_prompt
         else:
             st.caption("No image attached.")
 
         st.divider()
-        memory_backend = os.getenv("FITNESS_DB_BACKEND", "sqlite").strip().lower()
+        memory_backend = get_config().database.default_backend
         memory_backend_label = "Azure SQL" if memory_backend in {"azuresql", "azure_sql", "azure-sql"} else "SQLite"
         st.markdown(f"**Long-term memory ({memory_backend_label})**")
         try:
             if meals:
-                st.caption("Last 6 meals and macros")
-                for meal in meals[:6]:
+                st.caption(f"Last {get_config().ui.fitness.recent_meals_count} meals and macros")
+                for meal in meals[:get_config().ui.fitness.recent_meals_count]:
                     st.markdown(_render_longterm_meal_block(meal), unsafe_allow_html=True)
             else:
                 st.caption("No meal history found.")
@@ -2520,12 +2549,13 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
         st.markdown("**Short-term memory (chat)**")
         short_memory = [
             msg for msg in st.session_state.messages if msg.get("role") in {"user", "assistant"}
-        ][-6:]
+        ][-get_config().ui.fitness.recent_messages_count:]
         if short_memory:
+            _trunc = get_config().ui.fitness.message_truncate_length
             for msg in short_memory:
                 role = msg.get("role", "?")
                 text = (msg.get("content") or "").strip().replace("\n", " ")
-                st.caption(f"{role}: {text[:120]}{'...' if len(text) > 120 else ''}")
+                st.caption(f"{role}: {text[:_trunc]}{'...' if len(text) > _trunc else ''}")
         else:
             st.caption("No short-term memory yet.")
 
@@ -2533,7 +2563,7 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
         with st.expander("Memory Debug", expanded=False):
             debug_user_id, debug_resolved = _resolve_memory_user_id(st.session_state.get("fitness_user_name", "roy"))
             debug_session_key = f"fitness:{debug_user_id}"
-            debug_backend = os.getenv("FITNESS_DB_BACKEND", "sqlite").strip().lower()
+            debug_backend = get_config().database.default_backend
             debug_backend_label = "Azure SQL" if debug_backend in {"azuresql", "azure_sql", "azure-sql"} else "SQLite"
             if st.button("Force refresh debug snapshot", key=f"fitness_refresh_debug_{debug_user_id}"):
                 _invalidate_fitness_snapshot_cache(debug_user_id)
@@ -2584,7 +2614,7 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
             if debug_events:
                 st.text_area(
                     "memory_events",
-                    value="\n".join(debug_events[-120:]),
+                    value="\n".join(debug_events[-get_config().ui.performance.max_events:]),
                     height=220,
                     disabled=True,
                     key=f"memory_debug_events_log_{debug_user_id}",
@@ -2819,7 +2849,7 @@ with chat_col:
                         f"fitness_run latency_s={fitness_elapsed:.2f} usage_input={usage_parsed['input']} usage_output={usage_parsed['output']} usage_total={usage_parsed['total']}"
                     )
                     try:
-                        model_snapshot = _load_fitness_snapshot(fitness_user_id, metric_limit=6, meal_limit=6, request_id=request_id)
+                        model_snapshot = _load_fitness_snapshot(fitness_user_id, metric_limit=get_config().ui.fitness.recent_meals_count, meal_limit=get_config().ui.fitness.recent_meals_count, request_id=request_id)
                         _diag_context_data = model_snapshot
                         short_count = len([m for m in st.session_state.messages if m.get("role") in {"user", "assistant"}])
                         long_profile = len(model_snapshot.get("profile", {})) if isinstance(model_snapshot.get("profile"), dict) else 0

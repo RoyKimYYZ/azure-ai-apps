@@ -17,7 +17,7 @@ from uuid import uuid4
 from agent_framework import ChatMessage, Context, ContextProvider
 from pydantic import BaseModel, Field, model_validator
 
-from app_settings import Settings
+from config import get_config, resolve_env
 
 
 logger = logging.getLogger(__name__)
@@ -799,18 +799,20 @@ class SQLiteFitnessMemoryRepository:
 
 
 class AzureSqlFitnessMemoryRepository:
-    def __init__(self, settings: Settings) -> None:
-        self.settings = settings
-        self.server = _normalize_sql_server_name(settings.azure_sql_server)
-        self.database = settings.azure_sql_database.strip()
-        self.schema = settings.azure_sql_schema.strip() or "dbo"
-        self.driver = settings.azure_sql_driver.strip() or "ODBC Driver 18 for SQL Server"
-        self.auth_mode = settings.azure_sql_auth_mode
-        self.admin_user = settings.azure_sql_admin_user.strip()
-        self.admin_password = settings.azure_sql_admin_password
-        self.encrypt = settings.azure_sql_encrypt
-        self.trust_server_certificate = settings.azure_sql_trust_server_certificate
-        self.connection_timeout = settings.azure_sql_connection_timeout
+    def __init__(self) -> None:
+        cfg = get_config()
+        az_sql = cfg.database.azure_sql
+        self.azure_client_id = resolve_env(cfg.azure.identity.client_id_env)
+        self.server = _normalize_sql_server_name(resolve_env(az_sql.server_env))
+        self.database = resolve_env(az_sql.database_env).strip()
+        self.schema = az_sql.schema_name.strip() or "dbo"
+        self.driver = az_sql.driver.strip() or "ODBC Driver 18 for SQL Server"
+        self.auth_mode = az_sql.auth_mode
+        self.admin_user = resolve_env(az_sql.admin_user_env).strip()
+        self.admin_password = resolve_env(az_sql.admin_password_env)
+        self.encrypt = az_sql.encrypt
+        self.trust_server_certificate = az_sql.trust_server_certificate
+        self.connection_timeout = az_sql.connection_timeout
         self._auth_lock = threading.RLock()
         self._credential: Any | None = None
         self._access_token = ""
@@ -848,7 +850,7 @@ class AzureSqlFitnessMemoryRepository:
         with self._auth_lock:
             if self._credential is None:
                 self._credential = DefaultAzureCredential(
-                    managed_identity_client_id=self.settings.azure_client_id or None,
+                    managed_identity_client_id=self.azure_client_id or None,
                     exclude_interactive_browser_credential=False,
                 )
             return self._credential
@@ -1351,11 +1353,12 @@ def extract_idempotency_key(payload: PhotoSubmissionStructuredOutput, image_byte
     return hashlib.sha256(image_bytes + user_id.encode("utf-8")).hexdigest()
 
 
-def get_fitness_repository(db_path: str | Path | None = None, *, settings: Settings | None = None) -> FitnessMemoryRepository:
-    active_settings = settings or Settings()
-    backend = active_settings.fitness_db_backend
+def get_fitness_repository(db_path: str | Path | None = None) -> FitnessMemoryRepository:
+    cfg = get_config()
+    az_sql = cfg.database.azure_sql
+    backend = cfg.database.default_backend
     if backend == "sqlite":
-        path = Path(db_path) if db_path is not None else active_settings.db_path
+        path = Path(db_path) if db_path is not None else Path(cfg.database.sqlite.path).expanduser()
         cache_key = ("sqlite", str(path.expanduser().resolve()))
         with _FITNESS_REPOSITORY_CACHE_LOCK:
             cached = _FITNESS_REPOSITORY_CACHE.get(cache_key)
@@ -1366,23 +1369,23 @@ def get_fitness_repository(db_path: str | Path | None = None, *, settings: Setti
     if backend in {"azuresql", "azure_sql", "azure-sql"}:
         cache_key = (
             "azuresql",
-            active_settings.azure_sql_server,
-            active_settings.azure_sql_database,
-            active_settings.azure_sql_schema,
-            active_settings.azure_sql_driver,
-            active_settings.azure_sql_auth_mode,
-            active_settings.azure_sql_admin_user,
-            active_settings.azure_sql_admin_password,
-            active_settings.azure_sql_encrypt,
-            active_settings.azure_sql_trust_server_certificate,
-            active_settings.azure_sql_connection_timeout,
-            active_settings.azure_client_id,
-            active_settings.azure_tenant_id,
+            resolve_env(az_sql.server_env),
+            resolve_env(az_sql.database_env),
+            az_sql.schema_name,
+            az_sql.driver,
+            az_sql.auth_mode,
+            resolve_env(az_sql.admin_user_env),
+            resolve_env(az_sql.admin_password_env),
+            az_sql.encrypt,
+            az_sql.trust_server_certificate,
+            az_sql.connection_timeout,
+            resolve_env(cfg.azure.identity.client_id_env),
+            resolve_env(cfg.azure.identity.tenant_id_env),
         )
         with _FITNESS_REPOSITORY_CACHE_LOCK:
             cached = _FITNESS_REPOSITORY_CACHE.get(cache_key)
             if cached is None:
-                cached = AzureSqlFitnessMemoryRepository(active_settings)
+                cached = AzureSqlFitnessMemoryRepository()
                 _FITNESS_REPOSITORY_CACHE[cache_key] = cached
             return cached
     raise ValueError(f"Unsupported FITNESS_DB_BACKEND={backend}")
