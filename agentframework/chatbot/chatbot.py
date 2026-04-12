@@ -314,7 +314,73 @@ def _extract_display_text(payload: object) -> str:
 
         return json.dumps(payload, indent=2)
 
+    def _find_nested_text(value: Any) -> str:
+        if isinstance(value, str):
+            text = value.strip()
+            return text if text else ""
+        if isinstance(value, dict):
+            for key in ("text", "content", "answer", "message"):
+                if key in value:
+                    found = _find_nested_text(value.get(key))
+                    if found:
+                        return found
+            for nested in value.values():
+                found = _find_nested_text(nested)
+                if found:
+                    return found
+            return ""
+        if isinstance(value, list):
+            for nested in value:
+                found = _find_nested_text(nested)
+                if found:
+                    return found
+            return ""
+        nested_text = getattr(value, "text", None)
+        if isinstance(nested_text, str) and nested_text.strip():
+            return nested_text.strip()
+        nested_content = getattr(value, "content", None)
+        if nested_content is not None:
+            found = _find_nested_text(nested_content)
+            if found:
+                return found
+        return ""
+
+    found_nested = _find_nested_text(payload)
+    if found_nested:
+        return found_nested
+
     return str(payload)
+
+
+def _fitness_empty_response_fallback(read_model: dict[str, Any], user_prompt: str) -> str:
+    profile = read_model.get("profile", {}) if isinstance(read_model, dict) else {}
+    metrics = read_model.get("recent_body_metrics", []) if isinstance(read_model, dict) else []
+    meals = read_model.get("recent_meals", []) if isinstance(read_model, dict) else []
+
+    name = str(profile.get("name") or "there").strip() or "there"
+    latest_weight = None
+    for metric in metrics:
+        if isinstance(metric, dict) and str(metric.get("metric_type") or "").lower() == "weight":
+            value = metric.get("value_primary")
+            unit = metric.get("unit") or ""
+            if value is not None:
+                latest_weight = f"{value} {unit}".strip()
+                break
+
+    meals_count = len(meals) if isinstance(meals, list) else 0
+    metrics_count = len(metrics) if isinstance(metrics, list) else 0
+    prompt_lower = (user_prompt or "").lower()
+
+    if "health" in prompt_lower or "how is my" in prompt_lower:
+        lines = [f"Hi {name}. Based on your tracked data, you have {metrics_count} recent body-metric entries and {meals_count} recent meals logged."]
+        if latest_weight:
+            lines.append(f"Your latest recorded weight is {latest_weight}.")
+        if meals_count > 0:
+            lines.append("You are consistently logging meals, which is a strong habit for monitoring nutrition trends.")
+        lines.append("If you want, I can break this down into a 7-day trend with calories, protein, carbs, and fat averages.")
+        return " ".join(lines)
+
+    return f"I loaded your memory successfully ({metrics_count} body metrics and {meals_count} meals), but I could not format the model response. Ask again and I can provide a concise health summary."
 
 
 def _record_perf_event(
@@ -342,6 +408,105 @@ def _record_perf_event(
         )
     except Exception:
         logger.debug("Could not record performance event", exc_info=True)
+
+
+def _classify_debug_level(message: str) -> str:
+    lowered = message.lower()
+    if any(token in lowered for token in (" error", "error ", "failed", "exception", "traceback", " status=error")):
+        return "error"
+    if any(token in lowered for token in ("warn", "retry", "fallback", "degraded", "incompatible")):
+        return "warning"
+    if any(token in lowered for token in ("latency_s=", "usage_", "request_start", "request_end", "context_window")):
+        return "metric"
+    if "memory_event" in lowered or "memory " in lowered:
+        return "memory"
+    return "info"
+
+
+def _parse_debug_log_line(line: str) -> dict[str, str]:
+    raw = str(line or "").strip()
+    timestamp = ""
+    message = raw
+    match = re.match(r"^\[(?P<ts>[^\]]+)\]\s*(?P<body>.*)$", raw)
+    if match:
+        timestamp = (match.group("ts") or "").strip()
+        message = (match.group("body") or "").strip()
+    level = _classify_debug_level(message)
+    return {
+        "timestamp": timestamp,
+        "message": message,
+        "level": level,
+    }
+
+
+def _render_debug_logs_panel(debug_logs: list[str], *, panel_key: str) -> None:
+    if not debug_logs:
+        st.info("No debug logs captured for this response.")
+        return
+
+    parsed = [_parse_debug_log_line(line) for line in debug_logs if str(line or "").strip()]
+    if not parsed:
+        st.info("No debug logs captured for this response.")
+        return
+
+    counts = {"error": 0, "warning": 0, "metric": 0, "memory": 0, "info": 0}
+    for item in parsed:
+        counts[item["level"]] = counts.get(item["level"], 0) + 1
+
+    st.markdown(
+        (
+            "<div style='display:flex;gap:0.4rem;flex-wrap:wrap;margin:0.2rem 0 0.6rem 0;'>"
+            f"<span style='background:#23272e;color:#dbe2ea;border-radius:999px;padding:0.15rem 0.55rem;font-size:0.76rem;'>total {len(parsed)}</span>"
+            f"<span style='background:#3d1f22;color:#ffb3bd;border-radius:999px;padding:0.15rem 0.55rem;font-size:0.76rem;'>errors {counts.get('error', 0)}</span>"
+            f"<span style='background:#3e361e;color:#ffd489;border-radius:999px;padding:0.15rem 0.55rem;font-size:0.76rem;'>warnings {counts.get('warning', 0)}</span>"
+            f"<span style='background:#203341;color:#98e3ff;border-radius:999px;padding:0.15rem 0.55rem;font-size:0.76rem;'>metrics {counts.get('metric', 0)}</span>"
+            f"<span style='background:#1f3429;color:#9ee5b8;border-radius:999px;padding:0.15rem 0.55rem;font-size:0.76rem;'>memory {counts.get('memory', 0)}</span>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+    level_color = {
+        "error": ("#3d1f22", "#ffb3bd"),
+        "warning": ("#3e361e", "#ffd489"),
+        "metric": ("#203341", "#98e3ff"),
+        "memory": ("#1f3429", "#9ee5b8"),
+        "info": ("#23272e", "#dbe2ea"),
+    }
+
+    rows: list[str] = []
+    for item in parsed:
+        bg, fg = level_color.get(item["level"], ("#23272e", "#dbe2ea"))
+        ts = html.escape(item["timestamp"]) if item["timestamp"] else "-"
+        level = html.escape(item["level"].upper())
+        msg = html.escape(item["message"])
+        rows.append(
+            "<div style='display:grid;grid-template-columns:9.5rem 5.5rem 1fr;gap:0.5rem;align-items:start;"
+            f"padding:0.35rem 0.45rem;border-bottom:1px solid #2f343d;background:{bg};color:{fg};font-size:0.78rem;'>"
+            f"<span style='font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;opacity:0.9;'>{ts}</span>"
+            f"<span style='font-weight:700;'>{level}</span>"
+            f"<span style='white-space:pre-wrap;'>{msg}</span>"
+            "</div>"
+        )
+
+    st.markdown(
+        (
+            "<div style='border:1px solid #2f343d;border-radius:0.55rem;overflow:hidden;"
+            "max-height:380px;overflow-y:auto;background:#161a21;'>"
+            + "".join(rows)
+            + "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("Raw debug log lines", expanded=False):
+        st.text_area(
+            "raw_debug_lines",
+            value="\n".join(debug_logs),
+            height=180,
+            disabled=True,
+            key=f"raw_debug_lines_{panel_key}",
+        )
 
 
 def _format_agent1_output(raw_output: str) -> str:
@@ -1078,6 +1243,16 @@ async def _run_with_streaming_placeholder(
 
             response = AgentResponse.from_updates(response_updates)
             final_text = _extract_display_text(response) or streamed_text
+            if not final_text.strip():
+                # Some provider/SDK combinations can yield empty text in streaming updates.
+                # Fall back to one non-stream call to recover the assistant message for UI rendering.
+                fallback_response = await _resolve_maybe_awaitable(agent.run(messages, stream=False, **kwargs))  # type: ignore[call-overload]
+                final_text = _extract_display_text(fallback_response)
+                if final_text:
+                    if placeholder is not None:
+                        placeholder.markdown(final_text)
+                    if isinstance(fallback_response, AgentResponse):
+                        return fallback_response
             if placeholder is not None and final_text != streamed_text:
                 placeholder.markdown(final_text)
             return response
@@ -2029,6 +2204,10 @@ async def _run_fitness_turn(
             _append_memory_debug_event("text_persist", "skipped: model does not support structured output")
 
     serialized_thread: dict[str, Any] | None = None
+    if not (content or "").strip():
+        content = _fitness_empty_response_fallback(snapshot, user_prompt)
+        _append_memory_debug_event("llm_output", "model returned empty text; used deterministic fallback summary")
+
     try:
         resolved_thread = await _resolve_maybe_awaitable(thread)
         thread_serialize_started = time.perf_counter()
@@ -2590,8 +2769,7 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
         render_auth_state_banner()
         _auth_session = get_current_auth_session()
         with action_col:
-            if _auth_session is not None:
-                if st.button("Log out", key="fitness_logout_button", type="secondary", use_container_width=True):
+            if _auth_session is not None and st.button("Log out", key="fitness_logout_button", type="secondary", use_container_width=True):
                     logout()
         if _auth_session is None:
             render_login_gate()
@@ -2825,18 +3003,7 @@ with chat_col:
                 with tabs[0]:
                     st.markdown(message["content"])
                 with tabs[1]:
-                    debug_text = "\n".join(message.get("debug_logs", []))
-                    if not debug_text.strip():
-                        debug_text = "No debug logs captured for this response."
-                    st.markdown(
-                        (
-                            "<div style='background-color:#111111;padding:0.75rem;border-radius:0.5rem;'>"
-                            "<pre style='white-space:pre-wrap;color:#ffffff;margin:0;font-size:0.8rem;'>"
-                            f"{html.escape(debug_text)}"
-                            "</pre></div>"
-                        ),
-                        unsafe_allow_html=True,
-                    )
+                    _render_debug_logs_panel(message.get("debug_logs", []), panel_key=f"{_idx}")
             else:
                 st.markdown(message["content"])
 
@@ -2862,7 +3029,7 @@ with chat_col:
 
             def _add_turn_debug(line: str) -> None:
                 safe_line = _redact_sensitive_text(line)
-                stamped = f"[{datetime.now(ZoneInfo(_browser_timezone_name())).strftime('%m/%d/%Y')}] {safe_line}"
+                stamped = f"[{datetime.now(ZoneInfo(_browser_timezone_name())).strftime('%m/%d/%Y %H:%M:%S')}] {safe_line}"
                 turn_debug_logs.append(stamped)
                 logger.info("TURN_DEBUG %s", safe_line)
 
