@@ -246,7 +246,7 @@ def seed_meals(conn: sqlite3.Connection) -> None:
         snack_hour = 15
 
         # Occasionally skip a meal (~15% chance per meal)
-        def maybe_insert(template_list: list, idx: int, hour: int) -> int:
+        def maybe_insert(template_list: list, idx: int, hour: int, current=current) -> int:
             if random.random() < 0.12:  # skip ~12% of the time
                 return idx
             tpl = template_list[idx % len(template_list)]

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import copy
 import hashlib
 import html
@@ -94,39 +95,39 @@ def _ensure_debug_log_handler() -> None:
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent_framework import AgentRunResponse, ChatAgent, ChatMessage, DataContent, TextContent
-from agent_framework.azure import AzureOpenAIChatClient
-from azure.identity import AzureCliCredential
-from diagnostics_store import (
+from agent_framework import AgentRunResponse, ChatAgent, ChatMessage, DataContent, TextContent  # noqa: E402
+from agent_framework.azure import AzureOpenAIChatClient  # noqa: E402
+from azure.identity import AzureCliCredential  # noqa: E402
+from diagnostics_store import (  # noqa: E402
     DiagnosticsTurn,
     PerformanceEvent,
 )
-from diagnostics_store import (
+from diagnostics_store import (  # noqa: E402
     estimate_tokens as _diag_est_tokens,
 )
-from diagnostics_store import (
+from diagnostics_store import (  # noqa: E402
     get_context_window_size as _diag_ctx_size,
 )
-from diagnostics_store import (
+from diagnostics_store import (  # noqa: E402
     record_log as _diag_record_log,
 )
-from diagnostics_store import (
+from diagnostics_store import (  # noqa: E402
     record_performance_event as _diag_record_performance,
 )
-from diagnostics_store import (
+from diagnostics_store import (  # noqa: E402
     record_turn as _diag_record_turn,
 )
-from fitness_background_persistence import (
+from fitness_background_persistence import (  # noqa: E402
     FitnessPersistenceHooks,
     FitnessPersistenceRequest,
     schedule_fitness_persistence,
 )
-from openai import RateLimitError
+from openai import RateLimitError  # noqa: E402
 
-from ai_chat_client import KaitoChatClient
-from chatbot.auth_gate import get_current_auth_session, render_auth_state_banner, render_login_gate
+from ai_chat_client import KaitoChatClient  # noqa: E402
+from chatbot.auth_gate import get_current_auth_session, render_auth_state_banner, render_login_gate  # noqa: E402
 from config import get_config  # noqa: E402
-from fitness_memory import (
+from fitness_memory import (  # noqa: E402
     DatabaseContextProvider,
     PhotoSubmissionStructuredOutput,
     TextTurnStructuredOutput,
@@ -134,8 +135,8 @@ from fitness_memory import (
     extract_idempotency_key,
     get_fitness_repository,
 )
-from main import azure_foundry_general_agent, load_prompt_template, render_instructions
-from run_utils import get_backoff_seconds, run_with_retry
+from main import azure_foundry_general_agent, load_prompt_template, render_instructions  # noqa: E402
+from run_utils import get_backoff_seconds, run_with_retry  # noqa: E402
 
 _CFG = get_config()
 _FITNESS_AGENT_NAME = "Fitness Nutrition"
@@ -513,7 +514,7 @@ def _render_agent1_trace(placeholder: Any | None = None) -> None:
             event_lines.append(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
             event_lines.append("```")
 
-    if not visible_events:
+    if not visible_events:  # noqa: SIM108
         markdown = "_No MCP trace events yet._"
     else:
         markdown = (
@@ -1178,10 +1179,8 @@ def _sum_structured_macros(meal: dict) -> dict[str, float | None]:
         vals = []
         for event in events:
             if isinstance(event, dict) and event.get(field) is not None:
-                try:
+                with contextlib.suppress(Exception):
                     vals.append(float(event.get(field)))
-                except Exception:
-                    pass
         if not vals:
             return None
         return round(sum(vals), 2)
@@ -2117,7 +2116,7 @@ ui_prefs = _load_ui_prefs()
 with st.sidebar:
     st.header("Settings")
     saved_agent_choice = ui_prefs.get("agent_choice")
-    if isinstance(saved_agent_choice, str) and saved_agent_choice in AGENT_OPTIONS:
+    if isinstance(saved_agent_choice, str) and saved_agent_choice in AGENT_OPTIONS:  # noqa: SIM108
         default_agent_index = AGENT_OPTIONS.index(saved_agent_choice)
     else:
         default_agent_index = AGENT_OPTIONS.index("Fitness Nutrition") if "Fitness Nutrition" in AGENT_OPTIONS else 0
@@ -2166,7 +2165,7 @@ with st.sidebar:
                 models = _split_models(_direct_models)
             else:
                 models_env = provider_config.get("models_env")
-                if isinstance(models_env, list):
+                if isinstance(models_env, list):  # noqa: SIM108
                     models = _split_models(models_env)
                 else:
                     models = _split_models(os.getenv(models_env)) if models_env else []
@@ -2190,7 +2189,7 @@ with st.sidebar:
             models = _split_models(_direct_models)
         else:
             models_env = provider_config.get("models_env")
-            if isinstance(models_env, list):
+            if isinstance(models_env, list):  # noqa: SIM108
                 models = _split_models(models_env)
             else:
                 models = _split_models(os.getenv(models_env)) if models_env else []
@@ -2253,13 +2252,12 @@ with st.sidebar:
     if st.button("New chat"):
         st.session_state.messages = []
 
-    if agent_choice in {"Kaito Assistant", "KAITO RAG Assistant"} and _is_cluster_local_endpoint(endpoint):
-        if not _is_running_in_kubernetes():
-            st.warning(
-                "This endpoint uses Kubernetes cluster-local DNS (*.svc.cluster.local) and is not reachable from this runtime. "
-                "Use `kubectl port-forward` and configure a localhost URL such as "
-                "`http://127.0.0.1:8000/v1/chat/completions`."
-            )
+    if agent_choice in {"Kaito Assistant", "KAITO RAG Assistant"} and _is_cluster_local_endpoint(endpoint) and not _is_running_in_kubernetes():
+        st.warning(
+            "This endpoint uses Kubernetes cluster-local DNS (*.svc.cluster.local) and is not reachable from this runtime. "
+            "Use `kubectl port-forward` and configure a localhost URL such as "
+            "`http://127.0.0.1:8000/v1/chat/completions`."
+        )
 
     st.divider()
     st.subheader("Completion metrics")
@@ -2636,7 +2634,7 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
                 st.caption("No memory operation events yet.")
 
 with chat_col:
-    for idx, message in enumerate(st.session_state.messages):
+    for _idx, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             if debug_enabled and message.get("role") == "assistant":
                 tabs = st.tabs(["Response", "Debug Logs"])

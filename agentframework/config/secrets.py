@@ -79,7 +79,7 @@ def resolve_external_identities_secrets(
     identities_config: ExternalIdentitiesConfig,
 ) -> dict[str, ResolvedOAuthProvider]:
     """Return a dict mapping provider_name to ResolvedOAuthProvider with secrets materialised.
-    
+
     Only includes providers that are enabled. Returns empty dict if external_identities is disabled.
     """
     if not identities_config.enabled:

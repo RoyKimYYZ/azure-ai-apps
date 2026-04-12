@@ -251,10 +251,7 @@ class KaitoChatClient(BaseChatClient):
         if isinstance(choice, dict):
             finish_reason = choice.get("finish_reason")
             message = choice.get("message") or {}
-            if isinstance(message, dict):
-                text = message.get("content") or ""
-            else:
-                text = choice.get("text") or ""
+            text = (message.get("content") or "") if isinstance(message, dict) else (choice.get("text") or "")
 
         response_id = response.get("id") if isinstance(response, dict) else None
         created_at = None

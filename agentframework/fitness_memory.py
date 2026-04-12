@@ -90,7 +90,7 @@ def build_fitness_context_instructions(
 
 
 def _row_to_dict(description: Any, row: Any) -> dict[str, Any]:
-    return {column[0]: value for column, value in zip(description, row)}
+    return {column[0]: value for column, value in zip(description, row, strict=False)}
 
 
 def _import_azure_sql_runtime() -> tuple[Any, Any]:
@@ -267,11 +267,11 @@ class FitnessMemoryRepository(Protocol):
         provider_subject_id: str,
     ) -> str | None:
         """Look up user_id by provider identity.
-        
+
         Args:
             provider_name: OAuth provider (e.g., 'microsoft', 'google', 'twitter')
             provider_subject_id: Unique identifier from that provider (e.g., OID, sub)
-            
+
         Returns:
             user_id if found, None otherwise
         """
@@ -288,9 +288,9 @@ class FitnessMemoryRepository(Protocol):
         email_verified: bool = False,
     ) -> None:
         """Create a new user with provider identity metadata.
-        
+
         Called on first OAuth login to establish the user record.
-        
+
         Args:
             user_id: Canonical app user_id (e.g., 'u_<uuid>')
             name: Display name from provider
@@ -310,9 +310,9 @@ class FitnessMemoryRepository(Protocol):
         email_verified: bool | None = None,
     ) -> None:
         """Update login metadata for an existing provider-linked user.
-        
+
         Called on each OAuth login to refresh email and last_login_at.
-        
+
         Args:
             user_id: Canonical app user_id
             last_login_at: ISO timestamp of login; if None, not updated
@@ -996,8 +996,7 @@ class AzureSqlFitnessMemoryRepository:
             "sql-password",
         }:
             raise ValueError(f"Unsupported AZURE_SQL_AUTH_MODE={self.auth_mode}")
-        if self.auth_mode in {"adminpassword", "sqlpassword", "sql-password"}:
-            if not self.admin_user or not self.admin_password:
+        if self.auth_mode in {"adminpassword", "sqlpassword", "sql-password"} and (not self.admin_user or not self.admin_password):
                 raise ValueError(
                     "AZURE_SQL_ADMIN_USER and AZURE_SQL_ADMIN_PASSWORD must be set when AZURE_SQL_AUTH_MODE uses SQL password auth"
                 )

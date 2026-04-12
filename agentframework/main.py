@@ -28,11 +28,7 @@ def configure_logging() -> None:
 
     handlers: list[logging.Handler] = []
     fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
-    console_formatter: logging.Formatter
-    if log_color:
-        console_formatter = ColorLogFormatter(fmt)
-    else:
-        console_formatter = logging.Formatter(fmt)
+    console_formatter = ColorLogFormatter(fmt) if log_color else logging.Formatter(fmt)
 
     file_formatter = logging.Formatter(fmt)
 

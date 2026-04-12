@@ -158,10 +158,7 @@ with tab_agents:
                     "Description", value=agent.get("description", ""), key=f"agent_desc_{i}",
                 )
                 current_prov = agent.get("provider", "")
-                if current_prov in provider_names:
-                    prov_idx = provider_names.index(current_prov)
-                else:
-                    prov_idx = 0
+                prov_idx = provider_names.index(current_prov) if current_prov in provider_names else 0
                 d["ai"]["agents"][i]["provider"] = st.selectbox(
                     "Default provider", provider_names, index=prov_idx, key=f"agent_prov_{i}",
                 )

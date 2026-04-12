@@ -317,7 +317,7 @@ def seed_meals(cursor) -> None:
         dinner_hour    = 19 if dow < 5 else 18
         snack_hour     = 15
 
-        def maybe_insert(template_list, idx, hour):
+        def maybe_insert(template_list, idx, hour, current=current):
             nonlocal meal_rows
             if random.random() < 0.12:
                 return idx
