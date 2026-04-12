@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from agent_framework import Agent, ChatOptions, Content, Message
+from agent_framework_compat import Agent, ChatOptions, Content, Message
 from agent_framework.openai import OpenAIChatClient
 from azure.identity import AzureCliCredential
 from dotenv import load_dotenv

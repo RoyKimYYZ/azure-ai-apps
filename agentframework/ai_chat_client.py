@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
-from agent_framework import (
+from agent_framework_compat import (
     ChatResponse,
     ChatResponseUpdate,
     Content,

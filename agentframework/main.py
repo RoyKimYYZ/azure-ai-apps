@@ -5,9 +5,9 @@ import sys
 from pathlib import Path
 
 import yaml
-from agent_framework import Agent, ChatOptions
+from agent_framework_compat import Agent, ChatOptions
 from agent_framework.openai import OpenAIChatClient
-from azure.identity import AzureCliCredential
+from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
 from jinja2 import Template
 
@@ -121,7 +121,7 @@ async def azure_foundry_general_agent() -> Agent:
         endpoint = endpoint.strip().strip('"').strip("'").strip()
     chat_client = OpenAIChatClient(
         model=model_id,
-        credential=AzureCliCredential(),
+        credential=DefaultAzureCredential(exclude_interactive_browser_credential=True),
         azure_endpoint=endpoint or None,
     )
     agent = Agent(

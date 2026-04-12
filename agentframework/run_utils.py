@@ -2,7 +2,7 @@ import asyncio
 import random
 from typing import Any
 
-from agent_framework import Agent, AgentResponse, UsageDetails
+from agent_framework_compat import Agent, AgentResponse, UsageDetails
 from openai import RateLimitError
 
 from config import get_config

@@ -95,9 +95,9 @@ def _ensure_debug_log_handler() -> None:
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent_framework import Agent, AgentResponse, ChatOptions, Content, Message  # noqa: E402
+from agent_framework_compat import Agent, AgentResponse, ChatOptions, Content, Message  # noqa: E402
 from agent_framework.openai import OpenAIChatClient  # noqa: E402
-from azure.identity import AzureCliCredential  # noqa: E402
+from azure.identity import DefaultAzureCredential  # noqa: E402
 from diagnostics_store import (  # noqa: E402
     DiagnosticsTurn,
     PerformanceEvent,
@@ -125,13 +125,22 @@ from fitness_background_persistence import (  # noqa: E402
 from openai import RateLimitError  # noqa: E402
 
 from ai_chat_client import KaitoChatClient  # noqa: E402
-from chatbot.auth_gate import (  # noqa: E402
-    AuthenticatedSession,
-    get_current_auth_session,
-    logout,
-    render_auth_state_banner,
-    render_login_gate,
-)
+try:  # noqa: E402
+    from auth_gate import (
+        AuthenticatedSession,
+        get_current_auth_session,
+        logout,
+        render_auth_state_banner,
+        render_login_gate,
+    )
+except (ModuleNotFoundError, ImportError):  # noqa: E402
+    from chatbot.auth_gate import (
+        AuthenticatedSession,
+        get_current_auth_session,
+        logout,
+        render_auth_state_banner,
+        render_login_gate,
+    )
 from config import get_config  # noqa: E402
 from fitness_memory import (  # noqa: E402
     DatabaseContextProvider,
@@ -939,7 +948,11 @@ def _build_fitness_chat_client(backend_cfg: dict, providers: list[dict]):
             os.environ["AZURE_OPENAI_ENDPOINT"] = resolved_endpoint
         if api_key:
             os.environ["AZURE_OPENAI_API_KEY"] = api_key
-        return OpenAIChatClient(model=model_id, credential=AzureCliCredential()), model_id
+            return OpenAIChatClient(model=model_id), model_id
+        return OpenAIChatClient(
+            model=model_id,
+            credential=DefaultAzureCredential(exclude_interactive_browser_credential=True),
+        ), model_id
     return KaitoChatClient(
         endpoint=resolved_endpoint,
         api_key=api_key or None,
@@ -1236,8 +1249,24 @@ async def _run_with_streaming_placeholder(
         try:
             async for update in agent.run(messages, stream=True, **kwargs):  # type: ignore[call-overload]
                 response_updates.append(update)
-                if update.text:
-                    streamed_text = f"{streamed_text}{update.text}"
+                chunk = ""
+                update_text = getattr(update, "text", None)
+                if isinstance(update_text, str) and update_text.strip():
+                    chunk = update_text
+                else:
+                    # Some provider integrations emit message/content updates without populating update.text.
+                    chunk = _extract_display_text(update)
+
+                if chunk:
+                    if not streamed_text:
+                        streamed_text = chunk
+                    elif chunk.startswith(streamed_text):
+                        # Cumulative stream update; replace with newest full text.
+                        streamed_text = chunk
+                    elif not streamed_text.endswith(chunk):
+                        # Delta stream update; append only new fragment.
+                        streamed_text = f"{streamed_text}{chunk}"
+
                     if placeholder is not None:
                         placeholder.markdown(streamed_text)
 
@@ -2002,7 +2031,13 @@ def _build_fitness_runtime(
     )
     model_name = _fitness_chat_model(selected_model)
     if chat_client is None:
-        chat_client = OpenAIChatClient(model=model_name, credential=AzureCliCredential())
+        if _clean_env(os.getenv("AZURE_OPENAI_API_KEY")):
+            chat_client = OpenAIChatClient(model=model_name)
+        else:
+            chat_client = OpenAIChatClient(
+                model=model_name,
+                credential=DefaultAzureCredential(exclude_interactive_browser_credential=True),
+            )
     # Small-context models (phi family) need tighter limits to stay under their token ceiling.
     _small_context = _is_small_context_model(selected_model)
     meal_limit = 2 if _small_context else 6

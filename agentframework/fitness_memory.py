@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
-from agent_framework import ContextProvider
-from agent_framework import Message as ChatMessage
+from agent_framework_compat import ContextProvider
+from agent_framework_compat import Message as ChatMessage
 from pydantic import BaseModel, Field, model_validator
 
 from config import get_config, resolve_env

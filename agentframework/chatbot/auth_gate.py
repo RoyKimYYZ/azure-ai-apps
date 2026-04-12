@@ -17,7 +17,10 @@ from typing import Any
 
 import streamlit as st
 
-from chatbot.auth_identity import IdentityClaimNormalizer, generate_app_user_id
+try:
+    from auth_identity import IdentityClaimNormalizer, generate_app_user_id
+except (ModuleNotFoundError, ImportError):
+    from chatbot.auth_identity import IdentityClaimNormalizer, generate_app_user_id
 from config import get_config
 from config.secrets import ResolvedOAuthProvider, resolve_env, resolve_external_identities_secrets
 from fitness_memory import get_fitness_repository, utc_now_iso

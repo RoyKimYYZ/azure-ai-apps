@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from agent_framework import Agent, ChatOptions
+from agent_framework_compat import Agent, ChatOptions
 from agent_framework.openai import OpenAIChatClient
 from azure.identity import AzureCliCredential
 from dotenv import load_dotenv
