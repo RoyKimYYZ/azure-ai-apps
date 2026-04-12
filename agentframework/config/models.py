@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 # ── App metadata ────────────────────────────────
 
 
@@ -153,6 +152,7 @@ class AgentConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     name: str
+    enabled: bool = True
     provider: str = ""
     model: str = ""
     description: str = ""
@@ -297,6 +297,37 @@ class MCPConfig(BaseModel):
     github: MCPGithubConfig = Field(default_factory=MCPGithubConfig)
 
 
+# ── External Identities / OAuth ──────────────────
+
+
+class OAuthProviderConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    provider_name: str  # 'microsoft', 'google', 'twitter'
+    client_id_env: str  # Environment variable name for client ID
+    client_secret_env: str  # Environment variable name for client secret
+    authority_url: str = ""  # For Microsoft Entra ID
+    scope: str = "openid profile email"  # Default OIDC scopes
+    enabled: bool = True
+
+
+class ExternalIdentitiesConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = False  # Feature toggle for OAuth/OIDC
+    require_email_verified: bool = False  # Whether to enforce email_verified=true
+    providers: list[OAuthProviderConfig] = Field(default_factory=list)
+
+
+class DemoModeConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = False  # Feature toggle for anonymous demo
+    demo_user_id: str = "demo-user"  # User ID to bind demo sessions to
+    demo_user_name: str = "Demo User"  # Display name for demo user
+    writable: bool = True  # Whether demo mode allows writes
+
+
 # ── Admin ───────────────────────────────────────
 
 
@@ -321,4 +352,6 @@ class AppConfig(BaseModel):
     ai: AIConfig = Field(default_factory=AIConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    external_identities: ExternalIdentitiesConfig = Field(default_factory=ExternalIdentitiesConfig)
+    demo_mode: DemoModeConfig = Field(default_factory=DemoModeConfig)
     admin: AdminConfig = Field(default_factory=AdminConfig)

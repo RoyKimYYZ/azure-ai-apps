@@ -24,7 +24,6 @@ from pydantic import BaseModel
 from db import DEFAULT_DB_PATH, StructuredOutputStore
 from run_utils import run_with_retry, run_with_stream
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -164,7 +163,7 @@ class Agent1DemoRunner:
         repo = self._config.target_repo_name
         ref = self._config.target_repo_ref
         token = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
-    
+
 
         keywords = self._extract_keywords(previous_response_text)
         query = " ".join(keywords) if keywords else "readme"

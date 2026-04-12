@@ -1,9 +1,8 @@
+import logging
 import os
 import re
 import sys
 from collections.abc import Sequence
-import logging
-
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 

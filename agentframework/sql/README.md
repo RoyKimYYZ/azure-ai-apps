@@ -4,9 +4,11 @@ This guide covers both the local SQLite database used today and the Azure SQL ar
 
 ## Files
 
-- `001_fitness_memory_sqlite.sql` — SQLite migration script
+- `001_fitness_memory_sqlite.sql` — SQLite migration script (initial schema)
 - `001_fitness_memory_azuresql.sql` — Azure SQL-compatible version of the same schema
 - `002_structured_outputs_azuresql.sql` — Azure SQL schema for `structured_outputs`
+- `003_external_identities_sqlite.sql` — SQLite migration for OAuth/OIDC identity columns
+- `003_external_identities_azuresql.sql` — Azure SQL migration for OAuth/OIDC identity columns
 - `create_azure_sql_db.sh` — Azure CLI script to create an Azure SQL database
 - `migrate_sqlite_to_azure_sql.py` — SQLite to Azure SQL migration utility
 - `../agentframework.db` — local app database
@@ -207,22 +209,91 @@ bash sql/create_azure_sql_db.sh \
 
 ## Apply the Azure SQL Schema
 
-Apply both schema files in order against the target Azure SQL database:
+Apply schema files in order against the target Azure SQL database:
 
-1. `sql/001_fitness_memory_azuresql.sql`
-2. `sql/002_structured_outputs_azuresql.sql`
+1. `sql/001_fitness_memory_azuresql.sql` — Initial schema creation
+2. `sql/002_structured_outputs_azuresql.sql` — Structured outputs table
+3. `sql/003_external_identities_azuresql.sql` — OAuth/OIDC identity columns (required for consumer login)
 
-The first file creates the fitness-memory tables:
+Using `sqlcmd` CLI (recommended):
 
-- `users`
-- `body_metric_events`
-- `meal_events`
-- `agent_session_memory`
-- `ingestion_runs`
+```bash
+# Apply initial schema
+sqlcmd -S <server>.database.windows.net -d <database> -i sql/001_fitness_memory_azuresql.sql
 
-The second file creates:
+# Apply structured outputs schema
+sqlcmd -S <server>.database.windows.net -d <database> -i sql/002_structured_outputs_azuresql.sql
 
-- `structured_outputs`
+# Apply external identities schema (for OAuth/OIDC)
+sqlcmd -S <server>.database.windows.net -d <database> -i sql/003_external_identities_azuresql.sql
+```
+
+Or using Azure Data Studio / SSMS GUI:
+- Open the SQL file in your SQL editor
+- Connect to your server and database
+- Execute the entire script (F5)
+
+The schema files create the following tables:
+
+- `users` — User profiles with optional OAuth identity columns
+- `body_metric_events` — Weight, waist, blood pressure measurements
+- `meal_events` — Meal logs with nutrition analysis
+- `agent_session_memory` — Agent conversation state
+- `ingestion_runs` — Data ingestion audit trail
+- `structured_outputs` — Cached LLM structured outputs
+
+**External Identity Columns** (added by migration 003):
+
+The `dbo.users` table includes these additional columns:
+- `auth_provider` — OAuth provider name (e.g., 'microsoft', 'google', 'twitter')
+- `provider_subject_id` — Provider's unique user identifier (e.g., OID from Microsoft Entra)
+- `email` — User email address
+- `email_verified` — BIT flag indicating whether email was verified by provider
+- `last_login_at` — Timestamp of most recent login
+
+These columns are optional and support provider-based authentication while maintaining backward compatibility with existing username-based records.
+
+## Apply SQLite Migrations
+
+Apply schema files in order to an existing SQLite database:
+
+1. `sql/001_fitness_memory_sqlite.sql` — Initial schema creation (already applied to most existing databases)
+2. `sql/003_external_identities_sqlite.sql` — OAuth/OIDC identity columns (required for consumer login)
+
+From `agentframework/` folder:
+
+```bash
+# Apply external identities migration to existing database
+sqlite3 agentframework.db < sql/003_external_identities_sqlite.sql
+```
+
+Or using interactive shell:
+
+```bash
+sqlite3 agentframework.db
+sqlite> pragma foreign_keys = on;
+sqlite> .read sql/003_external_identities_sqlite.sql
+sqlite> .quit
+```
+
+Verify the migration applied successfully:
+
+```bash
+sqlite3 agentframework.db "PRAGMA table_info(users);" | grep -E 'auth_provider|provider_subject_id|email|email_verified|last_login_at'
+sqlite3 agentframework.db "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='users' AND name LIKE 'uq_users_auth_provider%';"
+```
+
+Expected output:
+- 5 new columns appear in table_info output
+- 3 new indexes appear in the index listing (uq_users_auth_provider_subject, ix_users_email, ix_users_last_login_at)
+
+To apply migrations to a fresh database:
+
+```bash
+# Create new local database with all migrations
+sqlite3 my-fitness.db < sql/001_fitness_memory_sqlite.sql
+sqlite3 my-fitness.db < sql/003_external_identities_sqlite.sql
+```
 
 ## Migrate Data from SQLite to Azure SQL
 

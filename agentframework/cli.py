@@ -2,8 +2,8 @@ import asyncio
 
 import click
 
-from main import agent1, configure_logging
 from fitness_agent import fitness_agent
+from main import agent1, configure_logging
 
 
 @click.group()

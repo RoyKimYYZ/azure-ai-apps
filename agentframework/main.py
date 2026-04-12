@@ -1,8 +1,9 @@
 import asyncio
+import logging
 import os
 import sys
-import logging
 from pathlib import Path
+
 import yaml
 from agent_framework import ChatAgent
 from agent_framework.azure import AzureOpenAIChatClient
@@ -10,11 +11,11 @@ from azure.identity import AzureCliCredential
 from dotenv import load_dotenv
 from jinja2 import Template
 
-from config import get_config, resolve_env, resolve_provider_secrets
-from ai_chat_client import KaitoChatClient
-from run_utils import run_with_retry
-from logging_colors import ColorLogFormatter, strip_ansi, supports_color
 from agent1_demo import agent1
+from ai_chat_client import KaitoChatClient
+from config import get_config, resolve_env, resolve_provider_secrets
+from logging_colors import ColorLogFormatter, strip_ansi, supports_color
+from run_utils import run_with_retry
 
 
 def configure_logging() -> None:
@@ -81,7 +82,7 @@ def load_prompt_template(path: Path) -> dict:
 
     return data
 
-   
+
 def render_instructions(template: str, context: dict[str, str]) -> str:
     """Render instructions from a template and context.
 
@@ -137,7 +138,7 @@ async def azure_foundry_general_agent() -> None:
         max_tokens=prompt.get("max_tokens"),
     )
     return agent
-    
+
 async def kaito_agent() -> None:
     logger.info("Starting KAITO agent")
     load_dotenv()
@@ -282,7 +283,7 @@ async def kaito_ragengine_bge_small_agent(
 
 
 
-    
+
 
 if __name__ == "__main__":
     configure_logging()

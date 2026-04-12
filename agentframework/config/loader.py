@@ -38,7 +38,7 @@ def _load_from_disk(path: Path) -> AppConfig:
         logger.warning("Config file %s not found – using Pydantic defaults", path)
         return AppConfig()
 
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         raw: dict[str, Any] = yaml.safe_load(fh) or {}
 
     return AppConfig(**raw)

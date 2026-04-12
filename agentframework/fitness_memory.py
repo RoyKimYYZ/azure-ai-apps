@@ -3,13 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import sqlite3
 import struct
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
 from uuid import uuid4
@@ -18,7 +17,6 @@ from agent_framework import ChatMessage, Context, ContextProvider
 from pydantic import BaseModel, Field, model_validator
 
 from config import get_config, resolve_env
-
 
 logger = logging.getLogger(__name__)
 _SKIP_UPDATE = object()
@@ -30,7 +28,7 @@ _FITNESS_REPOSITORY_CACHE_LOCK = threading.Lock()
 
 
 def utc_now_iso() -> str:
-    return datetime.now(tz=timezone.utc).isoformat()
+    return datetime.now(tz=UTC).isoformat()
 
 
 def _safe_json_loads(value: str | None) -> dict[str, Any]:
@@ -213,7 +211,7 @@ class BodyMetricEventInsert(BaseModel):
     # Validation to ensure blood_pressure has value_secondary and unit mmHg, and that weight and waist have appropriate units.
     # @model_validator is used here to perform cross-field validation after the initial model validation.
     @model_validator(mode="after")
-    def validate_metric_shape(self) -> "BodyMetricEventInsert":
+    def validate_metric_shape(self) -> BodyMetricEventInsert:
         if self.metric_type == "blood_pressure":
             if self.value_secondary is None:
                 raise ValueError("value_secondary is required for blood_pressure")
@@ -262,6 +260,66 @@ class FitnessMemoryRepository(Protocol):
     def resolve_user_id(self, user_name: str) -> tuple[str, bool]: ...
 
     def get_read_model(self, user_id: str, *, metric_limit: int = 10, meal_limit: int = 10) -> dict[str, Any]: ...
+
+    def get_user_by_provider_subject(
+        self,
+        provider_name: str,
+        provider_subject_id: str,
+    ) -> str | None:
+        """Look up user_id by provider identity.
+        
+        Args:
+            provider_name: OAuth provider (e.g., 'microsoft', 'google', 'twitter')
+            provider_subject_id: Unique identifier from that provider (e.g., OID, sub)
+            
+        Returns:
+            user_id if found, None otherwise
+        """
+        ...
+
+    def create_user_with_provider_identity(
+        self,
+        *,
+        user_id: str,
+        name: str,
+        auth_provider: str,
+        provider_subject_id: str,
+        email: str | None = None,
+        email_verified: bool = False,
+    ) -> None:
+        """Create a new user with provider identity metadata.
+        
+        Called on first OAuth login to establish the user record.
+        
+        Args:
+            user_id: Canonical app user_id (e.g., 'u_<uuid>')
+            name: Display name from provider
+            auth_provider: Provider name (microsoft, google, twitter)
+            provider_subject_id: Subject ID from provider
+            email: Email address (may be None for Twitter)
+            email_verified: Whether provider verified the email
+        """
+        ...
+
+    def update_provider_login_metadata(
+        self,
+        *,
+        user_id: str,
+        last_login_at: str | None = None,
+        email: str | None = None,
+        email_verified: bool | None = None,
+    ) -> None:
+        """Update login metadata for an existing provider-linked user.
+        
+        Called on each OAuth login to refresh email and last_login_at.
+        
+        Args:
+            user_id: Canonical app user_id
+            last_login_at: ISO timestamp of login; if None, not updated
+            email: New email value; if None, not updated
+            email_verified: New verification status; if None, not updated
+        """
+        ...
 
     def start_ingestion_run(
         self,
@@ -366,6 +424,107 @@ class SQLiteFitnessMemoryRepository:
             return normalized, False
 
         return normalized, False
+
+    def get_user_by_provider_subject(
+        self,
+        provider_name: str,
+        provider_subject_id: str,
+    ) -> str | None:
+        """Look up user_id by provider identity (SQLite)."""
+        if not self.db_path.exists():
+            return None
+
+        try:
+            with self._conn() as conn:
+                result = conn.execute(
+                    """
+                    SELECT user_id FROM users
+                    WHERE auth_provider = ? AND provider_subject_id = ?
+                    LIMIT 1
+                    """,
+                    (provider_name, provider_subject_id),
+                ).fetchone()
+                if result:
+                    return str(result["user_id"])
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in get_user_by_provider_subject: {e}")
+
+        return None
+
+    def create_user_with_provider_identity(
+        self,
+        *,
+        user_id: str,
+        name: str,
+        auth_provider: str,
+        provider_subject_id: str,
+        email: str | None = None,
+        email_verified: bool = False,
+    ) -> None:
+        """Create a new user with provider identity metadata (SQLite)."""
+        now = utc_now_iso()
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO users (
+                        user_id, name, auth_provider, provider_subject_id, email, email_verified,
+                        created_at, updated_at, is_active, last_login_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                    """,
+                    (user_id, name, auth_provider, provider_subject_id, email, 1 if email_verified else 0, now, now, now),
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in create_user_with_provider_identity: {e}")
+            raise
+
+    def update_provider_login_metadata(
+        self,
+        *,
+        user_id: str,
+        last_login_at: str | None = None,
+        email: str | None = None,
+        email_verified: bool | None = None,
+    ) -> None:
+        """Update login metadata for an existing provider-linked user (SQLite)."""
+        updates: list[str] = []
+        values: list[Any] = []
+
+        if last_login_at is not None:
+            updates.append("last_login_at = ?")
+            values.append(last_login_at)
+
+        if email is not None:
+            updates.append("email = ?")
+            values.append(email)
+
+        if email_verified is not None:
+            updates.append("email_verified = ?")
+            values.append(1 if email_verified else 0)
+
+        if not updates:
+            return
+
+        updates.append("updated_at = ?")
+        values.append(utc_now_iso())
+        values.append(user_id)
+
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    f"""
+                    UPDATE users
+                    SET {', '.join(updates)}
+                    WHERE user_id = ?
+                    """,
+                    values,
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in update_provider_login_metadata: {e}")
+            raise
 
     def _apply_profile_updates(self, conn: sqlite3.Connection, user_id: str, updates: list[ProfileUpdate]) -> dict[str, Any]:
         diagnostics: dict[str, Any] = {
@@ -524,7 +683,7 @@ class SQLiteFitnessMemoryRepository:
         meal_row = meal or MealUpsert()
         source_hash = meal_row.source_hash
         if not source_hash:
-            source_hash = hashlib.sha256(f"{user_id}:{image_path}".encode("utf-8")).hexdigest()
+            source_hash = hashlib.sha256(f"{user_id}:{image_path}".encode()).hexdigest()
 
         existing = conn.execute(
             "SELECT meal_event_id FROM meal_events WHERE user_id = ? AND source_hash = ?",
@@ -764,7 +923,7 @@ class SQLiteFitnessMemoryRepository:
         session_state: dict[str, Any],
         summary_text: str | None,
     ) -> None:
-        memory_id = hashlib.sha256(f"{user_id}:{session_key}:{agent_name}".encode("utf-8")).hexdigest()[:64]
+        memory_id = hashlib.sha256(f"{user_id}:{session_key}:{agent_name}".encode()).hexdigest()[:64]
         now = utc_now_iso()
         with self._conn() as conn:
             self._ensure_user(conn, user_id)
@@ -905,6 +1064,106 @@ class AzureSqlFitnessMemoryRepository:
 
         return normalized, False
 
+    def get_user_by_provider_subject(
+        self,
+        provider_name: str,
+        provider_subject_id: str,
+    ) -> str | None:
+        """Look up user_id by provider identity (Azure SQL)."""
+        try:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                result = cursor.execute(
+                    f"""
+                    SELECT TOP 1 user_id FROM {self._table('users')}
+                    WHERE auth_provider = ? AND provider_subject_id = ?
+                    """,
+                    (provider_name, provider_subject_id),
+                ).fetchone()
+                if result:
+                    return str(result[0])
+        except Exception as e:
+            logger.error(f"Azure SQL error in get_user_by_provider_subject: {e}")
+
+        return None
+
+    def create_user_with_provider_identity(
+        self,
+        *,
+        user_id: str,
+        name: str,
+        auth_provider: str,
+        provider_subject_id: str,
+        email: str | None = None,
+        email_verified: bool = False,
+    ) -> None:
+        """Create a new user with provider identity metadata (Azure SQL)."""
+        now = utc_now_iso()
+        try:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f"""
+                    INSERT INTO {self._table('users')} (
+                        user_id, name, auth_provider, provider_subject_id, email, email_verified,
+                        created_at, updated_at, is_active, last_login_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                    """,
+                    (user_id, name, auth_provider, provider_subject_id, email, 1 if email_verified else 0, now, now, now),
+                )
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Azure SQL error in create_user_with_provider_identity: {e}")
+            raise
+
+    def update_provider_login_metadata(
+        self,
+        *,
+        user_id: str,
+        last_login_at: str | None = None,
+        email: str | None = None,
+        email_verified: bool | None = None,
+    ) -> None:
+        """Update login metadata for an existing provider-linked user (Azure SQL)."""
+        updates: list[str] = []
+        values: list[Any] = []
+
+        if last_login_at is not None:
+            updates.append("last_login_at = ?")
+            values.append(last_login_at)
+
+        if email is not None:
+            updates.append("email = ?")
+            values.append(email)
+
+        if email_verified is not None:
+            updates.append("email_verified = ?")
+            values.append(1 if email_verified else 0)
+
+        if not updates:
+            return
+
+        updates.append("updated_at = ?")
+        values.append(utc_now_iso())
+        values.append(user_id)
+
+        try:
+            with self._conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f"""
+                    UPDATE {self._table('users')}
+                    SET {', '.join(updates)}
+                    WHERE user_id = ?
+                    """,
+                    values,
+                )
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Azure SQL error in update_provider_login_metadata: {e}")
+            raise
+
     def _conn(self) -> Any:
         pyodbc, DefaultAzureCredential = _import_azure_sql_runtime()
         pyodbc.pooling = True
@@ -1024,7 +1283,7 @@ class AzureSqlFitnessMemoryRepository:
         meal_row = meal or MealUpsert()
         source_hash = meal_row.source_hash
         if not source_hash:
-            source_hash = hashlib.sha256(f"{user_id}:{image_path}".encode("utf-8")).hexdigest()
+            source_hash = hashlib.sha256(f"{user_id}:{image_path}".encode()).hexdigest()
 
         existing = cursor.execute(
             f"SELECT meal_event_id FROM {self._table('meal_events')} WHERE user_id = ? AND source_hash = ?",
@@ -1275,7 +1534,7 @@ class AzureSqlFitnessMemoryRepository:
         session_state: dict[str, Any],
         summary_text: str | None,
     ) -> None:
-        memory_id = hashlib.sha256(f"{user_id}:{session_key}:{agent_name}".encode("utf-8")).hexdigest()[:64]
+        memory_id = hashlib.sha256(f"{user_id}:{session_key}:{agent_name}".encode()).hexdigest()[:64]
         now = utc_now_iso()
         with self._conn() as conn:
             cursor = conn.cursor()

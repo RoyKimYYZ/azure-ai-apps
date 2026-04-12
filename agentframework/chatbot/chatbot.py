@@ -10,22 +10,24 @@ import mimetypes
 import os
 import re
 import sys
-import time
 import threading
+import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlparse
 from contextlib import redirect_stdout
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import streamlit as st
 import yaml
 from dotenv import load_dotenv
 
-load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env", override=False)
+load_dotenv(PROJECT_ROOT / "chatbot" / ".env", override=False)
 
 LOG_LEVEL_ENV = "LOG_LEVEL"
 DEBUG_LOG_MAX_LINES_ENV = "DEBUG_LOG_MAX_LINES"
@@ -89,16 +91,41 @@ def _ensure_debug_log_handler() -> None:
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     root_logger.addHandler(handler)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
-from config import get_config  # noqa: E402
 
 from agent_framework import AgentRunResponse, ChatAgent, ChatMessage, DataContent, TextContent
 from agent_framework.azure import AzureOpenAIChatClient
 from azure.identity import AzureCliCredential
+from diagnostics_store import (
+    DiagnosticsTurn,
+    PerformanceEvent,
+)
+from diagnostics_store import (
+    estimate_tokens as _diag_est_tokens,
+)
+from diagnostics_store import (
+    get_context_window_size as _diag_ctx_size,
+)
+from diagnostics_store import (
+    record_log as _diag_record_log,
+)
+from diagnostics_store import (
+    record_performance_event as _diag_record_performance,
+)
+from diagnostics_store import (
+    record_turn as _diag_record_turn,
+)
+from fitness_background_persistence import (
+    FitnessPersistenceHooks,
+    FitnessPersistenceRequest,
+    schedule_fitness_persistence,
+)
+from openai import RateLimitError
+
 from ai_chat_client import KaitoChatClient
+from chatbot.auth_gate import get_current_auth_session, render_auth_state_banner, render_login_gate
+from config import get_config  # noqa: E402
 from fitness_memory import (
     DatabaseContextProvider,
     PhotoSubmissionStructuredOutput,
@@ -108,22 +135,8 @@ from fitness_memory import (
     get_fitness_repository,
 )
 from main import azure_foundry_general_agent, load_prompt_template, render_instructions
-from openai import RateLimitError
 from run_utils import get_backoff_seconds, run_with_retry
-from diagnostics_store import (
-    DiagnosticsTurn,
-    PerformanceEvent,
-    record_turn as _diag_record_turn,
-    record_log as _diag_record_log,
-    record_performance_event as _diag_record_performance,
-    get_context_window_size as _diag_ctx_size,
-    estimate_tokens as _diag_est_tokens,
-)
-from fitness_background_persistence import (
-    FitnessPersistenceHooks,
-    FitnessPersistenceRequest,
-    schedule_fitness_persistence,
-)
+
 _CFG = get_config()
 _FITNESS_AGENT_NAME = "Fitness Nutrition"
 
@@ -273,7 +286,7 @@ def _record_perf_event(
     try:
         _diag_record_performance(
             PerformanceEvent(
-                timestamp=datetime.now(timezone.utc).isoformat(),
+                timestamp=datetime.now(UTC).isoformat(),
                 agent=agent,
                 request_id=request_id,
                 category=category,
@@ -941,7 +954,7 @@ async def _persist_text_turn_memory(
                 return False
 
         idempotency_key = hashlib.sha256(
-            f"{user_id}:{user_text}:{assistant_text}".encode("utf-8")
+            f"{user_id}:{user_text}:{assistant_text}".encode()
         ).hexdigest()
         persist_started = time.perf_counter()
         persist_result = repo.apply_text_turn_submission(
@@ -977,7 +990,7 @@ async def _persist_text_turn_memory(
         if heuristic_payload is not None:
             payload, raw_output = heuristic_payload
             idempotency_key = hashlib.sha256(
-                f"{user_id}:{user_text}:{assistant_text}:heuristic".encode("utf-8")
+                f"{user_id}:{user_text}:{assistant_text}:heuristic".encode()
             ).hexdigest()
             persist_started = time.perf_counter()
             persist_result = repo.apply_text_turn_submission(
@@ -1067,9 +1080,9 @@ def _short_local_datetime(value: str | None) -> str:
             normalized = str(value).replace("Z", "+00:00")
             dt = datetime.fromisoformat(normalized)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         tz = ZoneInfo(_browser_timezone_name())
-        return dt.astimezone(tz).strftime("%m/%d/%Y")
+        return dt.astimezone(tz).strftime("%m/%d/%Y %H:%M")
     except Exception:
         return str(value)
 
@@ -1084,7 +1097,7 @@ def _short_local_date(value: str | None) -> str:
             normalized = str(value).replace("Z", "+00:00")
             dt = datetime.fromisoformat(normalized)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         tz = ZoneInfo(_browser_timezone_name())
         return dt.astimezone(tz).strftime("%m/%d/%Y")
     except Exception:
@@ -1571,7 +1584,7 @@ def _load_fitness_snapshot(
                 snapshot_copy = copy.deepcopy(cached)
                 _diag_record_performance(
                     PerformanceEvent(
-                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        timestamp=datetime.now(UTC).isoformat(),
                         agent=_FITNESS_AGENT_NAME,
                         request_id=request_id,
                         category="cache",
@@ -2050,9 +2063,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "metrics_log" not in st.session_state:
     st.session_state.metrics_log = []
-if "_metrics_rerun" not in st.session_state:
-    st.session_state._metrics_rerun = False
-elif st.session_state._metrics_rerun:
+if "_metrics_rerun" not in st.session_state or st.session_state._metrics_rerun:
     st.session_state._metrics_rerun = False
 
 CHATBOT_CONFIG = _load_chatbot_config()
@@ -2087,7 +2098,7 @@ def _save_ui_prefs(prefs: dict[str, Any]) -> None:
         logger.debug("Could not persist UI prefs", exc_info=True)
 
 
-AGENT_OPTIONS = [agent.get("name") for agent in AGENTS if agent.get("name")] or [
+AGENT_OPTIONS = [agent.get("name") for agent in AGENTS if agent.get("name") and agent.get("enabled", True)] or [
     "Azure Foundry General",
     "Kaito Assistant",
     "Fitness Nutrition",
@@ -2096,7 +2107,7 @@ AGENT_OPTIONS = [agent.get("name") for agent in AGENTS if agent.get("name")] or 
 uploaded_food_image = None
 uploaded_food_image_bytes = None
 uploaded_food_image_name = ""
-fitness_user_name = st.session_state.get("fitness_user_name", "roy")
+fitness_user_name = st.session_state.get("fitness_user_name", get_config().demo_mode.demo_user_id)
 chat_input_key = "chat_prompt_input"
 agent1_prompt_template_path = ""
 agent1_system_prompt_override = ""
@@ -2398,18 +2409,20 @@ if right_col is not None and agent_choice == "Agent1 Demo":
 if right_col is not None and agent_choice == "Fitness Nutrition":
     with right_col:
         st.subheader("Fitness Context")
-        fitness_user_name_input = st.text_input(
-            "User name",
-            value=fitness_user_name,
-            key="fitness_user_name",
-            help="Used as the user context key for long-term memory retrieval.",
-        )
-        memory_user_id, resolved_from_name = _resolve_memory_user_id(fitness_user_name_input)
+        render_auth_state_banner()
+        _auth_session = get_current_auth_session()
+        if _auth_session is None:
+            render_login_gate()
+            st.caption("Sign in with Microsoft (or continue as demo) to load fitness memory.")
+            st.stop()
+
+        memory_user_id = _auth_session.user_id
+        st.session_state["fitness_user_name"] = memory_user_id
         _sync_fitness_session_user(memory_user_id)
-        if resolved_from_name:
-            st.caption(f"Retrieving profile for user: {fitness_user_name_input} (matched user_id: {memory_user_id})")
+        if _auth_session.is_demo:
+            st.caption(f"Retrieving profile for demo user: {memory_user_id}")
         else:
-            st.caption(f"Retrieving profile for user: {memory_user_id}")
+            st.caption(f"Retrieving profile for authenticated user: {memory_user_id}")
 
         force_snapshot_refresh = st.button(
             "Refresh memory snapshot",
@@ -2561,7 +2574,7 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
 
         st.divider()
         with st.expander("Memory Debug", expanded=False):
-            debug_user_id, debug_resolved = _resolve_memory_user_id(st.session_state.get("fitness_user_name", "roy"))
+            debug_user_id, debug_resolved = _resolve_memory_user_id(st.session_state.get("fitness_user_name", get_config().demo_mode.demo_user_id))
             debug_session_key = f"fitness:{debug_user_id}"
             debug_backend = get_config().database.default_backend
             debug_backend_label = "Azure SQL" if debug_backend in {"azuresql", "azure_sql", "azure-sql"} else "SQLite"
@@ -2816,7 +2829,10 @@ with chat_col:
                         "You are a fitness nutrition assistant with access to user profile, body metrics, and meal macro history. "
                         "When users ask about goals or trends, use tracked data first and ask clarifying questions if missing data."
                     )
-                    fitness_user_id, _ = _resolve_memory_user_id(st.session_state.get("fitness_user_name", "roy"))
+                    _fitness_auth_session = get_current_auth_session()
+                    if _fitness_auth_session is None:
+                        raise RuntimeError("No authenticated session. Please sign in before running Fitness Nutrition.")
+                    fitness_user_id = _fitness_auth_session.user_id
                     # Route to the right backend based on the model chosen in the sidebar dropdown.
                     # model_backends in config.yaml maps model names to provider names.
                     _fit_agent_cfg = next((a for a in AGENTS if a.get("name") == "Fitness Nutrition"), {})
@@ -2954,7 +2970,7 @@ with chat_col:
                     _hist_est = max(0, _input_tok - _sys_est - _ctx_est)
                     _diag_record_turn(DiagnosticsTurn(
                         request_id=request_id,
-                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        timestamp=datetime.now(UTC).isoformat(),
                         agent=agent_choice,
                         model=model or "",
                         provider=provider_name or "",

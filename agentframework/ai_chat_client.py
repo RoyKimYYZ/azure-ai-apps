@@ -6,10 +6,10 @@ import os
 import socket
 import urllib.error
 import urllib.request
+from collections.abc import AsyncIterable, Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Iterable
-from collections.abc import AsyncIterable
+from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import urlparse
 
 from agent_framework import (
@@ -261,7 +261,7 @@ class KaitoChatClient(BaseChatClient):
         if isinstance(response, dict):
             created_raw = response.get("created")
             if isinstance(created_raw, (int, float)):
-                created_at = datetime.fromtimestamp(created_raw, tz=timezone.utc).isoformat()
+                created_at = datetime.fromtimestamp(created_raw, tz=UTC).isoformat()
             elif isinstance(created_raw, str):
                 created_at = created_raw
 

@@ -10,7 +10,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from config import get_config, reload_config, save_config, AppConfig  # noqa: E402
+from config import AppConfig, get_config, reload_config, save_config  # noqa: E402
 from config.models import (  # noqa: E402
     AIConfig,
     AIDefaultsConfig,

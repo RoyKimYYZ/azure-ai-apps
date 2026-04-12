@@ -1,10 +1,10 @@
+import hashlib
+import inspect
+import json
 import logging
 import mimetypes
 import os
 import sys
-import json
-import inspect
-import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +24,6 @@ from fitness_memory import (
     get_fitness_repository,
 )
 from run_utils import format_usage, run_with_retry, run_with_stream
-
 
 logger = logging.getLogger(__name__)
 _prompt_session = PromptSession()
@@ -128,7 +127,7 @@ async def _persist_text_turn_memory(
             return
 
         idempotency_key = hashlib.sha256(
-            f"{user_id}:{user_text}:{assistant_text}".encode("utf-8")
+            f"{user_id}:{user_text}:{assistant_text}".encode()
         ).hexdigest()
         persist_result = repo.apply_text_turn_submission(
             user_id=user_id,

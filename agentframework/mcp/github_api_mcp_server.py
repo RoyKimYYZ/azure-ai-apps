@@ -11,7 +11,6 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-
 mcp = FastMCP("github-api-repo-reader")
 
 GITHUB_API_BASE = "https://api.github.com"

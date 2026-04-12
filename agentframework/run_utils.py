@@ -1,9 +1,10 @@
 import asyncio
 import random
 
-from agent_framework import ChatAgent, AgentRunResponse, UsageContent, UsageDetails
-from config import get_config
+from agent_framework import AgentRunResponse, ChatAgent, UsageContent, UsageDetails
 from openai import RateLimitError
+
+from config import get_config
 
 
 def format_usage(usage: UsageDetails) -> str:

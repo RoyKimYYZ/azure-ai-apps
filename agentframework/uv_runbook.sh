@@ -45,7 +45,14 @@ git diff -- uv.lock
 uv remove requests
 uv cache clean 
 
-# End of runbook
+# Run linting
+uv run ruff check .
+
+ # Run type checking
+ uv run mypy .
+
+ # Run tests
+ uv run pytest
 
 # Testing uv run with a sample command
 

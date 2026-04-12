@@ -30,3 +30,17 @@ data:
   STREAMLIT_SERVER_PORT: "8501"
   STREAMLIT_SERVER_ADDRESS: "0.0.0.0"
   STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+  # ──────────────────────────────────────────
+  # OAuth/OIDC and Demo Mode Configuration
+  # ──────────────────────────────────────────
+  # Set to "true" to enable external OAuth/OIDC provider login (requires provider secrets)
+  EXTERNAL_IDENTITIES_ENABLED: "false"
+  # Set to "true" to enable anonymous demo mode (no login required)
+  DEMO_MODE_ENABLED: "false"
+  # Demo mode settings
+  DEMO_MODE_DEMO_USER_ID: "bob"
+  DEMO_MODE_DEMO_USER_NAME: "Demo User"
+  # Set to "true" to allow demo users to write/modify data (false = read-only)
+  DEMO_MODE_WRITABLE: "true"
+  # OAuth callback URL (used by auth flow; set to your ingress/service URL in production)
+  OAUTH_CALLBACK_HOST: "http://localhost:8501"

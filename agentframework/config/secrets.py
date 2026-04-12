@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from config.models import ProviderConfig
+from config.models import ExternalIdentitiesConfig, OAuthProviderConfig, ProviderConfig
 
 
 def resolve_env(env_key: str, default: str = "") -> str:
@@ -35,6 +35,18 @@ class ResolvedProvider:
     request_model: str
 
 
+@dataclass(frozen=True)
+class ResolvedOAuthProvider:
+    """An OAuth provider with credentials resolved from env vars."""
+
+    provider_name: str
+    client_id: str
+    client_secret: str
+    authority_url: str
+    scope: str
+    enabled: bool
+
+
 def resolve_provider_secrets(provider: ProviderConfig) -> ResolvedProvider:
     """Return a *ResolvedProvider* with env vars materialised."""
     return ResolvedProvider(
@@ -49,6 +61,37 @@ def resolve_provider_secrets(provider: ProviderConfig) -> ResolvedProvider:
         embedding_model=provider.embedding_model,
         request_model=provider.request_model,
     )
+
+
+def resolve_oauth_provider_secrets(provider: OAuthProviderConfig) -> ResolvedOAuthProvider:
+    """Return a *ResolvedOAuthProvider* with client_id and client_secret materialized from env."""
+    return ResolvedOAuthProvider(
+        provider_name=provider.provider_name,
+        client_id=resolve_env(provider.client_id_env),
+        client_secret=resolve_env(provider.client_secret_env),
+        authority_url=provider.authority_url,
+        scope=provider.scope,
+        enabled=provider.enabled,
+    )
+
+
+def resolve_external_identities_secrets(
+    identities_config: ExternalIdentitiesConfig,
+) -> dict[str, ResolvedOAuthProvider]:
+    """Return a dict mapping provider_name to ResolvedOAuthProvider with secrets materialised.
+    
+    Only includes providers that are enabled. Returns empty dict if external_identities is disabled.
+    """
+    if not identities_config.enabled:
+        return {}
+
+    resolved = {}
+    for provider in identities_config.providers:
+        if provider.enabled:
+            resolved_provider = resolve_oauth_provider_secrets(provider)
+            resolved[provider.provider_name] = resolved_provider
+
+    return resolved
 
 
 def redact_secret(value: str, visible_chars: int = 4) -> str:

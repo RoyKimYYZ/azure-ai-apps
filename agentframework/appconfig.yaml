@@ -106,22 +106,26 @@ ai:
 
   agents:
     - name: General Chat Assistant
+      enabled: true
       provider: AI Foundry
       model: gpt-5.2-chat
       description: General-purpose AI assistant via AI Foundry
       prompt_file: prompts/assistant_jinja.yaml
 
     - name: Kaito Assistant
+      enabled: true
       provider: KAITO
       model: phi-4-mini-instruct
       description: Chat via KAITO inference endpoint
 
     - name: KAITO RAG Assistant
+      enabled: true
       provider: KAITO RAGEngine
       model: phi-4-mini-instruct
       description: RAG via KAITO RAGEngine
 
     - name: Fitness Nutrition
+      enabled: true
       provider: AI Foundry
       description: Fitness & nutrition tracking with durable memory
       available_providers:
@@ -135,6 +139,7 @@ ai:
         "phi3.5 vision": KAITO phi3.5 vision
 
     - name: Agent1 Demo
+      enabled: true
       provider: AI Foundry
       description: Demo agent with MCP and prompt library
 
@@ -219,6 +224,47 @@ mcp:
     max_search_results: 10
     max_file_bytes: 102400
     max_return_lines: 500
+
+# ── External Identities / OAuth & OIDC ─────────
+# Supports provider-based login (Microsoft Entra, Google, Twitter/X)
+# Set enabled=true and configure providers below to activate OAuth flow
+external_identities:
+  enabled: true  # Set to true to enable OAuth/OIDC login
+  require_email_verified: false  # Enforce email_verified claim from provider
+  providers:
+    - provider_name: microsoft
+      client_id_env: OAUTH_MICROSOFT_CLIENT_ID
+      client_secret_env: OAUTH_MICROSOFT_CLIENT_SECRET
+      authority_url: https://login.microsoftonline.com/common
+      scope: "openid profile email"
+      enabled: true
+  # Example provider configuration (uncomment and customize):
+  # providers:
+  #   - provider_name: microsoft
+  #     client_id_env: OAUTH_MICROSOFT_CLIENT_ID
+  #     client_secret_env: OAUTH_MICROSOFT_CLIENT_SECRET
+  #     authority_url: https://login.microsoftonline.com/common
+  #     scope: "openid profile email"
+  #     enabled: true
+  #   - provider_name: google
+  #     client_id_env: OAUTH_GOOGLE_CLIENT_ID
+  #     client_secret_env: OAUTH_GOOGLE_CLIENT_SECRET
+  #     scope: "openid profile email"
+  #     enabled: true
+  #   - provider_name: twitter
+  #     client_id_env: OAUTH_TWITTER_CLIENT_ID
+  #     client_secret_env: OAUTH_TWITTER_CLIENT_SECRET
+  #     scope: "tweet.read users.read"
+  #     enabled: true
+
+# ── Demo Mode ───────────────────────────────────
+# Allows unauthenticated users to access the app as a demo user
+# Useful for marketing and user onboarding; demo user is isolated to prevent data contamination
+demo_mode:
+  enabled: true  # Set to true to enable anonymous demo mode
+  demo_user_id: demo-user  # User ID to use for demo sessions
+  demo_user_name: "Demo User"  # Display name shown to demo users
+  writable: true  # Allow demo users to create/update data
 
 # ── Admin page ──────────────────────────────────
 admin:

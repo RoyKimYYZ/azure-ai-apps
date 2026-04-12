@@ -18,8 +18,8 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(_PROJECT_ROOT / ".env")
 
-import yaml  # noqa: E402
 import streamlit as st  # noqa: E402
+import yaml  # noqa: E402
 
 from config import get_config, reload_config, save_config  # noqa: E402
 from config.models import AppConfig  # noqa: E402
@@ -143,19 +143,28 @@ with tab_agents:
     provider_names = [p.get("name", "") for p in d.get("ai", {}).get("providers", [])]
 
     for i, agent in enumerate(d.get("ai", {}).get("agents", [])):
-        with st.expander(f"**{agent.get('name', f'Agent {i}')}**", expanded=False):
-            st.text_input("Name", value=agent.get("name", ""), key=f"agent_name_{i}", disabled=True)
-            d["ai"]["agents"][i]["description"] = st.text_input(
-                "Description", value=agent.get("description", ""), key=f"agent_desc_{i}",
+        col_toggle, col_name = st.columns([0.15, 0.85])
+        with col_toggle:
+            is_enabled = d["ai"]["agents"][i].get("enabled", True)
+            d["ai"]["agents"][i]["enabled"] = st.checkbox(
+                "Enabled", value=is_enabled, key=f"agent_enabled_{i}",
+                label_visibility="collapsed",
             )
-            current_prov = agent.get("provider", "")
-            if current_prov in provider_names:
-                prov_idx = provider_names.index(current_prov)
-            else:
-                prov_idx = 0
-            d["ai"]["agents"][i]["provider"] = st.selectbox(
-                "Default provider", provider_names, index=prov_idx, key=f"agent_prov_{i}",
-            )
+        with col_name:
+            status = "✅" if d["ai"]["agents"][i]["enabled"] else "⛔"
+            with st.expander(f"{status} **{agent.get('name', f'Agent {i}')}**", expanded=False):
+                st.text_input("Name", value=agent.get("name", ""), key=f"agent_name_{i}", disabled=True)
+                d["ai"]["agents"][i]["description"] = st.text_input(
+                    "Description", value=agent.get("description", ""), key=f"agent_desc_{i}",
+                )
+                current_prov = agent.get("provider", "")
+                if current_prov in provider_names:
+                    prov_idx = provider_names.index(current_prov)
+                else:
+                    prov_idx = 0
+                d["ai"]["agents"][i]["provider"] = st.selectbox(
+                    "Default provider", provider_names, index=prov_idx, key=f"agent_prov_{i}",
+                )
 
     st.divider()
     st.subheader("Global AI Defaults")
@@ -324,8 +333,8 @@ with tab_diag:
         st.download_button("📥 Export config as YAML", data=yaml_export, file_name="appconfig-export.yaml", mime="text/yaml")
     with col_reset:
         st.markdown(
-            f'<a href="/diagnostics" target="_blank" style="display:inline-flex;align-items:center;gap:0.35rem;'
-            f'font-size:0.85rem;color:#4a9eff;text-decoration:none;">📊 Open Performance Diagnostics</a>',
+            '<a href="/diagnostics" target="_blank" style="display:inline-flex;align-items:center;gap:0.35rem;'
+            'font-size:0.85rem;color:#4a9eff;text-decoration:none;">📊 Open Performance Diagnostics</a>',
             unsafe_allow_html=True,
         )
 

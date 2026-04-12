@@ -9,7 +9,7 @@ from __future__ import annotations
 import html as _html
 import json as _json
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 # Ensure the chatbot package root is importable from the pages/ sub-dir.
@@ -23,14 +23,14 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 import streamlit as st  # noqa: E402
-from config import get_config  # noqa: E402
 from diagnostics_store import (  # noqa: E402
+    clear_agent_diagnostics,
     get_agent_diagnostics,
     get_all_agents,
     get_context_window_size,
-    clear_agent_diagnostics,
-    estimate_tokens,
 )
+
+from config import get_config  # noqa: E402
 
 # ── Page config ──────────────────────────────────────────────────────
 _cfg = get_config()
@@ -104,7 +104,7 @@ def _parse_timestamp(value: str | None) -> datetime | None:
         normalized = str(value).replace("Z", "+00:00")
         parsed = datetime.fromisoformat(normalized)
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(tzinfo=UTC)
         return parsed
     except Exception:
         return None
@@ -114,7 +114,7 @@ def _display_timestamp(value: str | None) -> str:
     parsed = _parse_timestamp(value)
     if parsed is None:
         return str(value or "")
-    return parsed.astimezone(timezone.utc).strftime("%m/%d/%Y")
+    return parsed.astimezone(UTC).strftime("%m/%d/%Y")
 
 
 def _group_conversations(turn_items: list[dict]) -> list[list[dict]]:
@@ -132,9 +132,7 @@ def _group_conversations(turn_items: list[dict]) -> list[list[dict]]:
         else:
             prev_messages = int(previous.get("messages_count") or 0)
             curr_messages = int(turn.get("messages_count") or 0)
-            if curr_messages <= prev_messages:
-                starts_new = True
-            elif previous_ts and current_ts and (current_ts - previous_ts) > timedelta(minutes=30):
+            if curr_messages <= prev_messages or previous_ts and current_ts and (current_ts - previous_ts) > timedelta(minutes=30):
                 starts_new = True
         if starts_new and current:
             grouped.append(current)
@@ -354,7 +352,7 @@ if view_mode == "Performance Diagnostics":
 
         export_payload = {
             "agent": agent_name,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "summary": {
                 "conversation_count": len(conversations),
                 "turn_count": len(turns),

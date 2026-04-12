@@ -24,7 +24,7 @@ import os
 import random
 import struct
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 # ── load .env ─────────────────────────────────────────────────────────────────
@@ -138,7 +138,7 @@ def _target_weight(d: date) -> float:
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _iso(d: date, hour: int = 8, minute: int = 0) -> str:
-    return datetime(d.year, d.month, d.day, hour, minute, 0, tzinfo=timezone.utc).isoformat()
+    return datetime(d.year, d.month, d.day, hour, minute, 0, tzinfo=UTC).isoformat()
 
 
 def _uid() -> str:
@@ -214,7 +214,7 @@ def purge_bob(cursor) -> None:
     cursor.execute(f"DELETE FROM {_t('meal_events')} WHERE user_id = ?", (BOB_USER_ID,))
     cursor.execute(f"DELETE FROM {_t('body_metric_events')} WHERE user_id = ?", (BOB_USER_ID,))
     cursor.execute(f"DELETE FROM {_t('users')} WHERE user_id = ?", (BOB_USER_ID,))
-    print(f"  ✓ purged existing Bob rows")
+    print("  ✓ purged existing Bob rows")
 
 
 def seed_user(cursor) -> None:
@@ -407,14 +407,14 @@ def main() -> None:
     database = os.environ.get("AZURE_SQL_DATABASE", "<not set>")
     print(f"\nTarget: {server} / {database}")
 
-    print(f"Connecting …")
+    print("Connecting …")
     conn = _get_connection(args.auth)
 
     try:
         cursor = conn.cursor()
         _check_schema(cursor)
 
-        print(f"\nSeeding Bob test data …")
+        print("\nSeeding Bob test data …")
         purge_bob(cursor)
         seed_user(cursor)
         seed_body_metrics(cursor)
@@ -429,7 +429,7 @@ def main() -> None:
             f"SELECT COUNT(*) FROM {_t('body_metric_events')} WHERE user_id = ?", (BOB_USER_ID,)
         ).fetchone()[0]
         print(f"\n✅ Done  meal_events={meal_count}  body_metric_events={metric_count}")
-        print(f"   Login with username 'bob' in the chatbot.\n")
+        print("   Login with username 'bob' in the chatbot.\n")
     except Exception:
         conn.rollback()
         raise

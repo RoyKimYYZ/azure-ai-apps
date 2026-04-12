@@ -4,7 +4,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_DB_PATH = Path(__file__).parent / "agentframework.db"
 
 

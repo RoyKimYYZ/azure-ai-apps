@@ -21,7 +21,7 @@ import argparse
 import random
 import sqlite3
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 # ── constants ────────────────────────────────────────────────────────────────
@@ -127,7 +127,7 @@ def _target_weight(d: date) -> float:
 # ── helper ────────────────────────────────────────────────────────────────────
 
 def _iso(d: date, hour: int = 8, minute: int = 0) -> str:
-    return datetime(d.year, d.month, d.day, hour, minute, 0, tzinfo=timezone.utc).isoformat()
+    return datetime(d.year, d.month, d.day, hour, minute, 0, tzinfo=UTC).isoformat()
 
 
 def _uid() -> str:
@@ -315,7 +315,7 @@ def main() -> None:
     db_path = Path(args.db) if args.db else _default_db_path()
     print(f"\nTarget DB: {db_path}")
     if not db_path.exists():
-        print(f"  ⚠  DB file not found — it will be created (schema must already be applied).")
+        print("  ⚠  DB file not found — it will be created (schema must already be applied).")
 
     with sqlite3.connect(db_path) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
@@ -344,7 +344,7 @@ def main() -> None:
     ).fetchone()[0]
 
     print(f"\n✅ Done  meal_events={total_meals}  body_metric_events={total_metrics}")
-    print(f"   Login with username 'bob' (external_user_key) in the chatbot.\n")
+    print("   Login with username 'bob' (external_user_key) in the chatbot.\n")
 
 
 if __name__ == "__main__":
