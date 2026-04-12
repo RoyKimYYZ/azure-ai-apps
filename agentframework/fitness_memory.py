@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
-from agent_framework import ChatMessage, Context, ContextProvider
+from agent_framework import ContextProvider
+from agent_framework import Message as ChatMessage
 from pydantic import BaseModel, Field, model_validator
 
 from config import get_config, resolve_env
@@ -1278,7 +1279,7 @@ class AzureSqlFitnessMemoryRepository:
         if meal is None and not macro_events:
             return None
 
-        aggregate = SQLiteFitnessMemoryRepository._aggregate_macros(self, macro_events)
+        aggregate = SQLiteFitnessMemoryRepository._aggregate_macros(self, macro_events)  # type: ignore[arg-type]
         meal_row = meal or MealUpsert()
         source_hash = meal_row.source_hash
         if not source_hash:
@@ -1569,6 +1570,8 @@ class AzureSqlFitnessMemoryRepository:
 
 
 class DatabaseContextProvider(ContextProvider):
+    DEFAULT_CONTEXT_PROMPT: str = ""
+
     def __init__(
         self,
         repository: FitnessMemoryRepository,
@@ -1579,6 +1582,7 @@ class DatabaseContextProvider(ContextProvider):
         read_model: dict[str, Any] | None = None,
         context_instructions: str | None = None,
     ) -> None:
+        super().__init__(source_id=f"fitness-db-{user_id}")
         self.repository = repository
         self.user_id = user_id
         self.metric_limit = metric_limit
@@ -1586,9 +1590,11 @@ class DatabaseContextProvider(ContextProvider):
         self.read_model = read_model
         self.context_instructions = context_instructions
 
-    async def invoking(self, messages: Any, **kwargs: Any) -> Context:
+    async def before_run(self, *, agent: Any, session: Any, context: Any, state: dict[str, Any]) -> None:
         if self.context_instructions is not None:
-            return Context(instructions=self.context_instructions) if self.context_instructions else Context()
+            if self.context_instructions:
+                context.extend_instructions(self.source_id, [self.context_instructions])
+            return
 
         model = self.read_model or self.repository.get_read_model(
             self.user_id,
@@ -1599,9 +1605,8 @@ class DatabaseContextProvider(ContextProvider):
             model,
             default_context_prompt=self.DEFAULT_CONTEXT_PROMPT,
         )
-        if not instructions:
-            return Context()
-        return Context(instructions=instructions)
+        if instructions:
+            context.extend_instructions(self.source_id, [instructions])
 
 
 def extract_idempotency_key(payload: PhotoSubmissionStructuredOutput, image_bytes: bytes, user_id: str) -> str:
@@ -1617,7 +1622,7 @@ def get_fitness_repository(db_path: str | Path | None = None) -> FitnessMemoryRe
     backend = cfg.database.default_backend
     if backend == "sqlite":
         path = Path(db_path) if db_path is not None else Path(cfg.database.sqlite.path).expanduser()
-        cache_key = ("sqlite", str(path.expanduser().resolve()))
+        cache_key: tuple[Any, ...] = ("sqlite", str(path.expanduser().resolve()))
         with _FITNESS_REPOSITORY_CACHE_LOCK:
             cached = _FITNESS_REPOSITORY_CACHE.get(cache_key)
             if cached is None:

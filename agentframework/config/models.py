@@ -71,11 +71,11 @@ class SqliteConfig(BaseModel):
 
 
 class AzureSqlConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, populate_by_name=True)
 
     server_env: str = "AZURE_SQL_SERVER"
     database_env: str = "AZURE_SQL_DATABASE"
-    schema_name: str = Field("dbo", alias="schema")
+    schema_name: str = Field(default="dbo", validation_alias="schema")
     driver: str = "ODBC Driver 18 for SQL Server"
     auth_mode: str = "defaultazurecredential"
     admin_user_env: str = "AZURE_SQL_ADMIN_USER"
@@ -90,7 +90,7 @@ class DatabaseConfig(BaseModel):
 
     default_backend: str = "sqlite"
     sqlite: SqliteConfig = Field(default_factory=SqliteConfig)
-    azure_sql: AzureSqlConfig = Field(default_factory=AzureSqlConfig)
+    azure_sql: AzureSqlConfig = Field(default_factory=lambda: AzureSqlConfig())
 
 
 # ── Azure services ──────────────────────────────

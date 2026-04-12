@@ -37,7 +37,7 @@ def schedule_fitness_persistence(
 ) -> None:
     def _worker() -> None:
         try:
-            asyncio.run(hooks.persist_async(request))
+            asyncio.run(hooks.persist_async(request))  # type: ignore[arg-type]
             hooks.record_log(
                 "Fitness Nutrition",
                 f"Background memory persistence completed for {request.user_id}",

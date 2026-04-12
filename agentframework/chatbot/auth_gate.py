@@ -42,7 +42,7 @@ def _init_auth_session_state() -> None:
     Called once per Streamlit app startup.
     """
     if "auth_session" not in st.session_state:
-        st.session_state.auth_session: AuthenticatedSession | None = None
+        st.session_state["auth_session"] = None
 
     if "auth_state_code" not in st.session_state:
         st.session_state.auth_state_code = None  # OAuth state parameter for CSRF protection

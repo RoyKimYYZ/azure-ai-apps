@@ -25,6 +25,7 @@ dev = [
     "ruff>=0.14.14",
     "agent-framework",
     "pytest>=9.0.2",
+    "types-pyyaml>=6.0.12.20260408",
 ]
 [tool.ruff]  # Ruff configuration table (Python linter/formatter)
 

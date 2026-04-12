@@ -8,8 +8,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from agent_framework import ChatAgent, ChatMessage, DataContent, TextContent
-from agent_framework.azure import AzureOpenAIChatClient
+from agent_framework import Agent, ChatOptions, Content, Message
+from agent_framework.openai import OpenAIChatClient
 from azure.identity import AzureCliCredential
 from dotenv import load_dotenv
 from openai import RateLimitError
@@ -26,7 +26,7 @@ from fitness_memory import (
 from run_utils import format_usage, run_with_retry, run_with_stream
 
 logger = logging.getLogger(__name__)
-_prompt_session = PromptSession()
+_prompt_session: PromptSession[str] = PromptSession()
 
 
 async def _prompt_text(message: str) -> str:
@@ -96,7 +96,7 @@ def _coerce_text_turn_payload(result: Any) -> tuple[TextTurnStructuredOutput, di
 
 async def _persist_text_turn_memory(
     *,
-    agent: ChatAgent,
+    agent: Agent,
     repo: Any,
     user_id: str,
     user_text: str,
@@ -143,7 +143,7 @@ async def _persist_text_turn_memory(
 async def _persist_thread_state(repo: Any, *, user_id: str, session_key: str, agent_name: str, thread: Any, summary_text: str | None) -> None:
     try:
         resolved_thread = await _resolve_maybe_awaitable(thread)
-        serialized_thread = await resolved_thread.serialize()
+        serialized_thread = resolved_thread.to_dict()
         repo.upsert_thread_state(
             user_id=user_id,
             session_key=session_key,
@@ -160,7 +160,7 @@ async def _persist_thread_state(repo: Any, *, user_id: str, session_key: str, ag
 
 async def _handle_photo_submission(
     *,
-    agent: ChatAgent,
+    agent: Agent,
     thread: Any,
     repo: Any,
     user_id: str,
@@ -190,11 +190,11 @@ async def _handle_photo_submission(
         "If unknown, return empty arrays/nulls instead of guessing."
     )
 
-    request_message = ChatMessage(
+    request_message = Message(
         role="user",
         contents=[
-            TextContent(text=extraction_prompt),
-            DataContent(data=image_bytes, media_type=mime_type),
+            Content(type="text", text=extraction_prompt),
+            Content.from_data(data=image_bytes, media_type=mime_type),
         ],
     )
 
@@ -235,7 +235,7 @@ async def _handle_photo_submission(
         _status("Photo analysis completed.")
         logger.info("Photo persisted: %s", persistence_result)
         if getattr(result, "usage_details", None):
-            logger.info("Photo extraction tokens: %s", format_usage(result.usage_details))
+            logger.info("Photo extraction tokens: %s", format_usage(result.usage_details))  # type: ignore[arg-type]
     except Exception as exc:
         repo.finish_ingestion_run(
             run_id=run.run_id,
@@ -266,31 +266,29 @@ async def fitness_agent(image_path: str | None = None) -> None:
         "When users ask about goals or trends, use tracked data first and ask clarifying questions if missing data."
     )
 
-    chat_client = AzureOpenAIChatClient(credential=AzureCliCredential())
+    chat_client = OpenAIChatClient(credential=AzureCliCredential())
     context_provider = DatabaseContextProvider(repo, user_id=user_id)
-    agent = ChatAgent(
-        chat_client=chat_client,
+    agent = Agent(
+        client=chat_client,
         instructions=instructions,
         name=agent_name,
-        model=cfg.azure.openai.chat_deployment,
+        default_options=ChatOptions(model=cfg.azure.openai.chat_deployment, max_tokens=800, temperature=1.0),
         context_providers=[context_provider],
         tools=[],
-        max_completion_tokens=800,
-        temperature=1.0,
     )
 
     saved_state = repo.load_thread_state(user_id=user_id, session_key=session_key, agent_name=agent_name)
     if saved_state:
         try:
-            thread = await _resolve_maybe_awaitable(agent.deserialize_thread(saved_state))
+            thread = await _resolve_maybe_awaitable(agent.get_session(saved_state))  # type: ignore[arg-type]
         except Exception as exc:
             logger.error(
                 "Could not restore prior conversation memory. Starting a new session thread. Error: %s",
                 exc,
             )
-            thread = await _resolve_maybe_awaitable(agent.get_new_thread())
+            thread = agent.create_session()
     else:
-        thread = await _resolve_maybe_awaitable(agent.get_new_thread())
+        thread = agent.create_session()
 
     logger.info("Fitness assistant started for user_id=%s session_key=%s", user_id, session_key)
     _print_help()
@@ -363,7 +361,7 @@ async def fitness_agent(image_path: str | None = None) -> None:
                 assistant_text=assistant_text,
             )
             if getattr(result, "usage_details", None):
-                logger.info("Chat request tokens: %s", format_usage(result.usage_details))
+                logger.info("Chat request tokens: %s", format_usage(result.usage_details))  # type: ignore[arg-type]
             await _persist_thread_state(
                 repo,
                 user_id=user_id,

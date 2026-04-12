@@ -95,8 +95,8 @@ def _ensure_debug_log_handler() -> None:
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent_framework import AgentRunResponse, ChatAgent, ChatMessage, DataContent, TextContent  # noqa: E402
-from agent_framework.azure import AzureOpenAIChatClient  # noqa: E402
+from agent_framework import Agent, AgentResponse, ChatOptions, Content, Message  # noqa: E402
+from agent_framework.openai import OpenAIChatClient  # noqa: E402
 from azure.identity import AzureCliCredential  # noqa: E402
 from diagnostics_store import (  # noqa: E402
     DiagnosticsTurn,
@@ -312,10 +312,10 @@ def _format_agent1_output(raw_output: str) -> str:
         "step3": [],
         "step4": [],
     }
-    current_step = None
+    current_step: str | None = None
 
     def _append_to_current(line_value: str) -> None:
-        if current_step in section_lines:
+        if current_step is not None and current_step in section_lines:
             section_lines[current_step].append(line_value)
 
     for line in lines:
@@ -407,7 +407,8 @@ def _format_agent1_output(raw_output: str) -> str:
 
         grounding_path = str(payload.get("grounding_path") or "n/a")
         error = payload.get("error")
-        matched_lines = payload.get("matched_lines") if isinstance(payload.get("matched_lines"), list) else []
+        _raw_matched = payload.get("matched_lines")
+        matched_lines: list[Any] = _raw_matched if isinstance(_raw_matched, list) else []
         clean_lines = [str(line) for line in matched_lines if str(line).strip()]
         lines_to_show = clean_lines[:3]
         status_badge = "🟩 Evidence OK" if not error else "🟥 Evidence Error"
@@ -636,7 +637,7 @@ class _Agent1LiveCapture:
 
 
 
-def _build_kaito_agent(model: str) -> ChatAgent:
+def _build_kaito_agent(model: str) -> Agent:
     prompt_path = Path(
         os.getenv(
             "PROMPT_TEMPLATE_PATH",
@@ -663,18 +664,17 @@ def _build_kaito_agent(model: str) -> ChatAgent:
         default_model=model_id,
     )
 
-    return ChatAgent(
-        chat_client=chat_client,
+    return Agent(
+        client=chat_client,
         instructions=instructions,
         name=prompt.get("name", "KaitoAssistant"),
-        model=model_id,
+        default_options=ChatOptions(model=model_id, max_tokens=prompt.get("max_tokens")),  # type: ignore[typeddict-item]
         tools=prompt.get("tools", []),
-        max_tokens=prompt.get("max_tokens"),
     )
 
 
-def _build_kaito_ragengine_agent(model: str, index_name: str | None = None) -> ChatAgent:
-    """Build a ChatAgent targeting a KAITO RAGEngine deployment."""
+def _build_kaito_ragengine_agent(model: str, index_name: str | None = None) -> Agent:
+    """Build a Agent targeting a KAITO RAGEngine deployment."""
     prompt_path = Path(
         os.getenv(
             "PROMPT_TEMPLATE_PATH",
@@ -701,13 +701,12 @@ def _build_kaito_ragengine_agent(model: str, index_name: str | None = None) -> C
         extra_payload={"index_name": rag_index},
     )
 
-    return ChatAgent(
-        chat_client=chat_client,
+    return Agent(
+        client=chat_client,
         instructions=instructions,
         name=prompt.get("name", "KaitoRAGEngineAssistant"),
-        model=model_id,
+        default_options=ChatOptions(model=model_id, max_tokens=prompt.get("max_tokens")),  # type: ignore[typeddict-item]
         tools=prompt.get("tools", []),
-        max_tokens=prompt.get("max_tokens"),
     )
 
 
@@ -732,7 +731,7 @@ def _build_fitness_chat_client(backend_cfg: dict, providers: list[dict]):
             os.environ["AZURE_OPENAI_ENDPOINT"] = resolved_endpoint
         if api_key:
             os.environ["AZURE_OPENAI_API_KEY"] = api_key
-        return AzureOpenAIChatClient(credential=AzureCliCredential()), model_id
+        return OpenAIChatClient(credential=AzureCliCredential()), model_id
     return KaitoChatClient(
         endpoint=resolved_endpoint,
         api_key=api_key or None,
@@ -907,7 +906,7 @@ def _heuristic_text_turn_payload(user_text: str) -> tuple[TextTurnStructuredOutp
 
 async def _persist_text_turn_memory(
     *,
-    agent: ChatAgent,
+    agent: Agent,
     repo: object,
     user_id: str,
     user_text: str,
@@ -958,20 +957,11 @@ async def _persist_text_turn_memory(
             f"{user_id}:{user_text}:{assistant_text}".encode()
         ).hexdigest()
         persist_started = time.perf_counter()
-        persist_result = repo.apply_text_turn_submission(
+        persist_result = repo.apply_text_turn_submission(  # type: ignore[attr-defined]
             user_id=user_id,
             payload=payload,
             raw_structured_output=raw_output,
             idempotency_key=idempotency_key,
-        )
-        _record_perf_event(
-            agent=_FITNESS_AGENT_NAME,
-            request_id=request_id,
-            category="db",
-            name="apply_text_turn_submission",
-            started=persist_started,
-            profile_updates=len(payload.profile_updates),
-            body_metric_events=len(payload.body_metric_events_insert),
         )
         logger.info("Text-turn memory persisted: %s", persist_result)
         profile_debug = persist_result.get("profile_debug", {}) if isinstance(persist_result, dict) else {}
@@ -994,7 +984,7 @@ async def _persist_text_turn_memory(
                 f"{user_id}:{user_text}:{assistant_text}:heuristic".encode()
             ).hexdigest()
             persist_started = time.perf_counter()
-            persist_result = repo.apply_text_turn_submission(
+            persist_result = repo.apply_text_turn_submission(  # type: ignore[attr-defined]
                 user_id=user_id,
                 payload=payload,
                 raw_structured_output=raw_output,
@@ -1025,25 +1015,25 @@ async def _resolve_maybe_awaitable(value: object) -> object:
 
 
 async def _run_with_streaming_placeholder(
-    agent: ChatAgent,
+    agent: Agent,
     messages: object,
     *,
     placeholder: Any | None,
     max_retries: int = 5,
     **kwargs: Any,
-) -> AgentRunResponse:
+) -> AgentResponse:
     for attempt in range(1, max_retries + 1):
         streamed_text = ""
         response_updates = []
         try:
-            async for update in agent.run_stream(messages, **kwargs):
+            async for update in agent.run(messages, stream=True, **kwargs):  # type: ignore[call-overload]
                 response_updates.append(update)
                 if update.text:
                     streamed_text = f"{streamed_text}{update.text}"
                     if placeholder is not None:
                         placeholder.markdown(streamed_text)
 
-            response = AgentRunResponse.from_agent_run_response_updates(response_updates)
+            response = AgentResponse.from_updates(response_updates)
             final_text = _extract_display_text(getattr(response, "text", None) or streamed_text or str(response))
             if placeholder is not None and final_text != streamed_text:
                 placeholder.markdown(final_text)
@@ -1054,6 +1044,7 @@ async def _run_with_streaming_placeholder(
             if placeholder is not None:
                 placeholder.empty()
             await asyncio.sleep(get_backoff_seconds(attempt))
+    raise RuntimeError("Exhausted retries")
 
 
 def _normalize_user_id(user_name: str) -> str:
@@ -1135,7 +1126,7 @@ def _format_metric_value(value: object, *, decimals: int = 1) -> str:
     if value is None:
         return "n/a"
     try:
-        return f"{float(value):.{decimals}f}"
+        return f"{float(value):.{decimals}f}"  # type: ignore[arg-type]
     except (TypeError, ValueError):
         text = str(value).strip()
         return text if text else "n/a"
@@ -1180,7 +1171,7 @@ def _sum_structured_macros(meal: dict) -> dict[str, float | None]:
         for event in events:
             if isinstance(event, dict) and event.get(field) is not None:
                 with contextlib.suppress(Exception):
-                    vals.append(float(event.get(field)))
+                    vals.append(float(event[field]))
         if not vals:
             return None
         return round(sum(vals), 2)
@@ -1428,7 +1419,7 @@ def _estimate_tokens_from_text(text: str) -> int:
     return max(1, len(cleaned) // 4)
 
 
-def _estimate_tokens_from_chat_messages(messages: list[ChatMessage]) -> int:
+def _estimate_tokens_from_chat_messages(messages: list[Message]) -> int:
     total = 0
     for message in messages:
         total += _estimate_tokens_from_text(getattr(message, "text", "") or "")
@@ -1614,8 +1605,9 @@ def _load_fitness_snapshot(
         "recent_meals": read_model.get("recent_meals", []) or [],
     }
     profile_user_id = ""
-    if isinstance(snapshot.get("profile"), dict):
-        profile_user_id = str(snapshot["profile"].get("user_id") or "").strip()
+    _profile_val = snapshot.get("profile")
+    if isinstance(_profile_val, dict):
+        profile_user_id = str(_profile_val.get("user_id") or "").strip()
     if profile_user_id and profile_user_id != user_id:
         logger.warning(
             "Fitness read model mismatch for requested user_id=%s because profile.user_id=%s",
@@ -1633,7 +1625,7 @@ def _load_fitness_snapshot(
 
 async def _persist_photo_turn_memory(
     *,
-    agent: ChatAgent,
+    agent: Agent,
     repo: object,
     user_id: str,
     image_bytes: bytes,
@@ -1657,11 +1649,11 @@ async def _persist_photo_turn_memory(
         "- Use conservative estimates with lower confidence when uncertain.\n"
         "- Return empty arrays/nulls only when the image is not food, unreadable, or insufficient for estimation."
     )
-    extraction_message = ChatMessage(
+    extraction_message = Message(
         role="user",
         contents=[
-            TextContent(text=extraction_prompt),
-            DataContent(data=image_bytes, media_type=mime_type),
+            Content(type="text", text=extraction_prompt),
+            Content.from_data(data=image_bytes, media_type=mime_type),
         ],
     )
     try:
@@ -1686,7 +1678,7 @@ async def _persist_photo_turn_memory(
         file_hint = image_name or "uploaded-image"
         idempotency_key = extract_idempotency_key(payload, image_bytes, user_id)
         persist_started = time.perf_counter()
-        repo.apply_photo_submission(
+        repo.apply_photo_submission(  # type: ignore[attr-defined]
             user_id=user_id,
             image_path=file_hint,
             payload=payload,
@@ -1782,7 +1774,7 @@ def _build_fitness_runtime(
     chat_client=None,
     repo: object | None = None,
     cached_snapshot: dict[str, Any] | None = None,
-) -> tuple[ChatAgent, object, str, str]:
+) -> tuple[Agent, object, str, str]:
     repo = repo or get_fitness_repository(_fitness_db_path())
     session_key = f"fitness:{user_id}"
     agent_name = "fitness_agent"
@@ -1791,29 +1783,31 @@ def _build_fitness_runtime(
         "When users ask about goals or trends, use tracked data first and ask clarifying questions if missing data."
     )
     if chat_client is None:
-        chat_client = AzureOpenAIChatClient(credential=AzureCliCredential())
+        chat_client = OpenAIChatClient(credential=AzureCliCredential())
     # Small-context models (phi family) need tighter limits to stay under their token ceiling.
     _small_context = _is_small_context_model(selected_model)
     meal_limit = 2 if _small_context else 6
     metric_limit = 2 if _small_context else 5
     snapshot = cached_snapshot or _load_fitness_snapshot(user_id, metric_limit=metric_limit, meal_limit=meal_limit)
     context_provider = DatabaseContextProvider(
-        repo,
+        repo,  # type: ignore[arg-type]
         user_id=user_id,
         meal_limit=meal_limit,
         metric_limit=metric_limit,
         read_model=snapshot,
         context_instructions=snapshot.get("context_instructions"),
     )
-    agent = ChatAgent(
-        chat_client=chat_client,
+    agent = Agent(
+        client=chat_client,
         instructions=instructions,
         name=agent_name,
-        model=_fitness_chat_model(selected_model),
+        default_options=ChatOptions(
+            model=_fitness_chat_model(selected_model),
+            max_tokens=800,
+            temperature=get_config().ai.defaults.extraction_temperature,
+        ),
         context_providers=[context_provider],
         tools=[],
-        max_completion_tokens=800,
-        temperature=get_config().ai.defaults.extraction_temperature,
     )
     return agent, repo, session_key, agent_name
 
@@ -1847,7 +1841,7 @@ async def _run_fitness_turn(
     # Small-context models start a fresh thread each turn to avoid accumulated history
     # overflowing their token limit. Durable fitness memory still comes via DatabaseContextProvider.
     thread_load_started = time.perf_counter()
-    saved_state = None if small_context else repo.load_thread_state(user_id=user_id, session_key=session_key, agent_name=agent_name)
+    saved_state = None if small_context else repo.load_thread_state(user_id=user_id, session_key=session_key, agent_name=agent_name)  # type: ignore[attr-defined]
     if not small_context:
         _record_perf_event(
             agent=_FITNESS_AGENT_NAME,
@@ -1860,7 +1854,7 @@ async def _run_fitness_turn(
     if saved_state:
         try:
             deserialize_started = time.perf_counter()
-            thread = await _resolve_maybe_awaitable(agent.deserialize_thread(saved_state))
+            thread = agent.get_session(saved_state)
             _record_perf_event(
                 agent=_FITNESS_AGENT_NAME,
                 request_id=request_id,
@@ -1871,7 +1865,7 @@ async def _run_fitness_turn(
             _append_memory_debug_event("thread_restore", "restored prior thread state")
         except Exception:
             new_thread_started = time.perf_counter()
-            thread = await _resolve_maybe_awaitable(agent.get_new_thread())
+            thread = agent.create_session()
             _record_perf_event(
                 agent=_FITNESS_AGENT_NAME,
                 request_id=request_id,
@@ -1883,7 +1877,7 @@ async def _run_fitness_turn(
             _append_memory_debug_event("thread_restore", "restore failed, created new thread")
     else:
         new_thread_started = time.perf_counter()
-        thread = await _resolve_maybe_awaitable(agent.get_new_thread())
+        thread = agent.create_session()
         _record_perf_event(
             agent=_FITNESS_AGENT_NAME,
             request_id=request_id,
@@ -1903,11 +1897,11 @@ async def _run_fitness_turn(
     if image_bytes is not None:
         mime_type, _ = mimetypes.guess_type(image_name or "")
         mime_type = mime_type or "application/octet-stream"
-        request_message = ChatMessage(
+        request_message = Message(
             role="user",
             contents=[
-                TextContent(text=user_prompt),
-                DataContent(data=image_bytes, media_type=mime_type),
+                Content(type="text", text=user_prompt),
+                Content.from_data(data=image_bytes, media_type=mime_type),
             ],
         )
         llm_started = time.perf_counter()
@@ -1929,9 +1923,9 @@ async def _run_fitness_turn(
         usage = getattr(result, "usage_details", None)
         if usage:
             usage_summary = (
-                f"input={usage.input_token_count or 0} "
-                f"output={usage.output_token_count or 0} "
-                f"total={usage.total_token_count or 0}"
+                f"input={usage.get('input_token_count') or 0} "
+                f"output={usage.get('output_token_count') or 0} "
+                f"total={usage.get('total_token_count') or 0}"
             )
         if small_context:
             _append_memory_debug_event("photo_persist", "skipped: model does not support structured output")
@@ -1956,9 +1950,9 @@ async def _run_fitness_turn(
         usage = getattr(result, "usage_details", None)
         if usage:
             usage_summary = (
-                f"input={usage.input_token_count or 0} "
-                f"output={usage.output_token_count or 0} "
-                f"total={usage.total_token_count or 0}"
+                f"input={usage.get('input_token_count') or 0} "
+                f"output={usage.get('output_token_count') or 0} "
+                f"total={usage.get('total_token_count') or 0}"
             )
 
         if small_context:
@@ -1968,7 +1962,7 @@ async def _run_fitness_turn(
     try:
         resolved_thread = await _resolve_maybe_awaitable(thread)
         thread_serialize_started = time.perf_counter()
-        serialized_thread = await resolved_thread.serialize()
+        serialized_thread = resolved_thread.to_dict()  # type: ignore[attr-defined]
         _record_perf_event(
             agent=_FITNESS_AGENT_NAME,
             request_id=request_id,
@@ -2009,7 +2003,7 @@ async def _run_fitness_turn(
 
 
 _ui = get_config().ui
-st.set_page_config(page_title=_ui.theme.page_title, page_icon=_ui.theme.page_icon, layout=_ui.theme.layout)
+st.set_page_config(page_title=_ui.theme.page_title, page_icon=_ui.theme.page_icon, layout=_ui.theme.layout)  # type: ignore[arg-type]
 
 st.markdown(
         """
@@ -2125,7 +2119,7 @@ with st.sidebar:
         ui_prefs["agent_choice"] = agent_choice
         _save_ui_prefs(ui_prefs)
 
-    agent_config = next((agent for agent in AGENTS if agent.get("name") == agent_choice), {})
+    agent_config: dict[str, Any] = next((agent for agent in AGENTS if agent.get("name") == agent_choice), {})
     available_providers = agent_config.get("available_providers", [])
     agent_model = agent_config.get("model")
 
@@ -2144,12 +2138,12 @@ with st.sidebar:
             ui_prefs["ai_provider_by_agent"] = _ap_prefs
             _save_ui_prefs(ui_prefs)
 
-        _ap_entry = next((ap for ap in available_providers if ap.get("name") == selected_ai_provider), {})
+        _ap_entry: dict[str, Any] = next((ap for ap in available_providers if ap.get("name") == selected_ai_provider), {})
         _ap_models = _ap_entry.get("models")
 
         # Resolve to the config-level provider for endpoint/key lookup
         provider_name = selected_ai_provider if selected_ai_provider != "AKS KAITO" else agent_config.get("provider", "AI Foundry")
-        provider_config = next((p for p in PROVIDERS if p.get("name") == provider_name), {})
+        provider_config: dict[str, Any] = next((p for p in PROVIDERS if p.get("name") == provider_name), {})
         if not provider_config and PROVIDERS:
             provider_config = PROVIDERS[0]
             provider_name = provider_config.get("name")
@@ -2282,7 +2276,7 @@ with st.sidebar:
 if agent_choice in {"Fitness Nutrition", "Agent1 Demo"}:
     chat_col, right_col = st.columns([3.2, 1.2], gap="large")
 else:
-    chat_col, right_col = st.container(), None
+    chat_col, right_col = st.container(), None  # type: ignore[assignment]
 
 if right_col is not None and agent_choice == "Agent1 Demo":
     with right_col:
@@ -2428,9 +2422,9 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
             help="Reload the cached profile, body metrics, and meal history for the selected user.",
         )
 
-        profile = {}
-        recent_body_metrics = []
-        meals = []
+        profile: dict[str, Any] = {}
+        recent_body_metrics: list[Any] = []
+        meals: list[Any] = []
         read_model: dict[str, Any] = {}
         memory_error = None
         try:
@@ -2705,7 +2699,7 @@ with chat_col:
                     agent_build_elapsed = time.perf_counter() - agent_build_started
                     agent_init_elapsed = agent_build_elapsed
                     history_messages = [
-                        ChatMessage(role=msg.get("role", "user"), text=msg.get("content", ""))
+                        Message(role=msg.get("role", "user"), contents=[msg.get("content", "")])
                         for msg in st.session_state.messages
                     ]
                     est_input_tokens = _estimate_tokens_from_chat_messages(history_messages)
@@ -2721,9 +2715,9 @@ with chat_col:
                     usage = getattr(result, "usage_details", None)
                     if usage:
                         usage_summary = (
-                            f"input={usage.input_token_count or 0} "
-                            f"output={usage.output_token_count or 0} "
-                            f"total={usage.total_token_count or 0}"
+                            f"input={usage.get('input_token_count') or 0} "
+                            f"output={usage.get('output_token_count') or 0} "
+                            f"total={usage.get('total_token_count') or 0}"
                         )
                     usage_parsed = _parse_usage_summary(usage_summary)
                     _add_turn_debug(
@@ -2750,9 +2744,9 @@ with chat_col:
                     usage = getattr(result, "usage_details", None)
                     if usage:
                         usage_summary = (
-                            f"input={usage.input_token_count or 0} "
-                            f"output={usage.output_token_count or 0} "
-                            f"total={usage.total_token_count or 0}"
+                            f"input={usage.get('input_token_count') or 0} "
+                            f"output={usage.get('output_token_count') or 0} "
+                            f"total={usage.get('total_token_count') or 0}"
                         )
                     usage_parsed = _parse_usage_summary(usage_summary)
                     _add_turn_debug(
@@ -2779,9 +2773,9 @@ with chat_col:
                     usage = getattr(result, "usage_details", None)
                     if usage:
                         usage_summary = (
-                            f"input={usage.input_token_count or 0} "
-                            f"output={usage.output_token_count or 0} "
-                            f"total={usage.total_token_count or 0}"
+                            f"input={usage.get('input_token_count') or 0} "
+                            f"output={usage.get('output_token_count') or 0} "
+                            f"total={usage.get('total_token_count') or 0}"
                         )
                     usage_parsed = _parse_usage_summary(usage_summary)
                     _add_turn_debug(
@@ -2833,7 +2827,7 @@ with chat_col:
                     fitness_user_id = _fitness_auth_session.user_id
                     # Route to the right backend based on the model chosen in the sidebar dropdown.
                     # model_backends in config.yaml maps model names to provider names.
-                    _fit_agent_cfg = next((a for a in AGENTS if a.get("name") == "Fitness Nutrition"), {})
+                    _fit_agent_cfg: dict[str, Any] = next((a for a in AGENTS if a.get("name") == "Fitness Nutrition"), {})
                     _model_backends = _fit_agent_cfg.get("model_backends", {})
                     _backend_provider_name = _model_backends.get(model) if isinstance(_model_backends, dict) else None
                     if _backend_provider_name:

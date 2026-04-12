@@ -43,7 +43,7 @@ class StructuredOutputStore:
                 (json.dumps(steps), rationale, output_type, datetime.utcnow().isoformat()),
             )
             connection.commit()
-            return int(cursor.lastrowid)
+            return int(cursor.lastrowid or 0)
 
     def list_all(self) -> list[dict[str, Any]]:
         self.init_db()

@@ -6,20 +6,18 @@ import os
 import socket
 import urllib.error
 import urllib.request
-from collections.abc import AsyncIterable, Iterable
+from collections.abc import AsyncIterable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
 from agent_framework import (
-    ChatMessage,
-    ChatOptions,
     ChatResponse,
     ChatResponseUpdate,
-    DataContent,
+    Content,
     FinishReason,
-    TextContent,
+    Message,
     UsageDetails,
 )
 from agent_framework._clients import BaseChatClient
@@ -203,8 +201,9 @@ class KaitoChatClient(BaseChatClient):
     async def _inner_get_response(
         self,
         *,
-        messages: list[ChatMessage],
-        chat_options: ChatOptions,
+        messages: Sequence[Message],
+        stream: bool,
+        options: Mapping[str, Any],
         **kwargs: Any,
     ) -> ChatResponse:
         payload_messages: list[dict[str, Any]] = []
@@ -212,7 +211,7 @@ class KaitoChatClient(BaseChatClient):
             role = message.role.value if hasattr(message.role, "value") else str(message.role)
             # Check whether this message carries any image data.
             contents = getattr(message, "contents", None) or []
-            image_parts = [c for c in contents if isinstance(c, DataContent)]
+            image_parts = [c for c in contents if isinstance(c, Content) and c.type == "data"]
             if image_parts:
                 # Build OpenAI vision array-content format.
                 parts: list[dict[str, Any]] = []
@@ -227,17 +226,18 @@ class KaitoChatClient(BaseChatClient):
                 payload_messages.append({"role": role, "content": message.text})
 
         extra_body: dict[str, Any] = dict(self._extra_payload)
-        if chat_options.temperature is not None:
-            extra_body["temperature"] = chat_options.temperature
-        if chat_options.max_tokens is not None:
-            extra_body["max_tokens"] = chat_options.max_tokens
-        if chat_options.top_p is not None:
-            extra_body["top_p"] = chat_options.top_p
+        if options.get("temperature") is not None:
+            extra_body["temperature"] = options["temperature"]
+        if options.get("max_tokens") is not None:
+            extra_body["max_tokens"] = options["max_tokens"]
+        if options.get("top_p") is not None:
+            extra_body["top_p"] = options["top_p"]
 
+        model_id = options.get("model") or self._client._config.default_model
         response = await asyncio.to_thread(
             self._client.complete,
             messages=payload_messages,
-            model=chat_options.model_id or self._client._config.default_model,
+            model=model_id,
             extra_body=extra_body,
         )
 
@@ -250,8 +250,8 @@ class KaitoChatClient(BaseChatClient):
         finish_reason = None
         if isinstance(choice, dict):
             finish_reason = choice.get("finish_reason")
-            message = choice.get("message") or {}
-            text = (message.get("content") or "") if isinstance(message, dict) else (choice.get("text") or "")
+            resp_message = choice.get("message") or {}
+            text = (resp_message.get("content") or "") if isinstance(resp_message, dict) else (choice.get("text") or "")
 
         response_id = response.get("id") if isinstance(response, dict) else None
         created_at = None
@@ -262,41 +262,42 @@ class KaitoChatClient(BaseChatClient):
             elif isinstance(created_raw, str):
                 created_at = created_raw
 
-        usage_details = None
+        usage_details: UsageDetails | None = None
         if isinstance(response, dict) and isinstance(response.get("usage"), dict):
-            usage = response.get("usage") or {}
+            usage_raw = response.get("usage") or {}
             usage_details = UsageDetails(
-                input_token_count=usage.get("prompt_tokens"),
-                output_token_count=usage.get("completion_tokens"),
-                total_token_count=usage.get("total_tokens"),
+                input_token_count=usage_raw.get("prompt_tokens"),
+                output_token_count=usage_raw.get("completion_tokens"),
+                total_token_count=usage_raw.get("total_tokens"),
             )
 
-        chat_message = ChatMessage(role="assistant", text=text)
+        chat_message = Message(role="assistant", contents=[text])
         return ChatResponse(
             messages=[chat_message],
             response_id=response_id,
             created_at=created_at,
-            model_id=response.get("model") if isinstance(response, dict) else chat_options.model_id,
-            finish_reason=FinishReason(value=finish_reason) if finish_reason else None,
+            model=response.get("model") if isinstance(response, dict) else model_id,
+            finish_reason=FinishReason(finish_reason) if finish_reason else None,
             usage_details=usage_details,
-            response_format=chat_options.response_format,
+            response_format=options.get("response_format"),
             raw_representation=response,
         )
 
     async def _inner_get_streaming_response(
         self,
         *,
-        messages: list[ChatMessage],
-        chat_options: ChatOptions,
+        messages: Sequence[Message],
+        stream: bool,
+        options: Mapping[str, Any],
         **kwargs: Any,
     ) -> AsyncIterable[ChatResponseUpdate]:
-        response = await self._inner_get_response(messages=messages, chat_options=chat_options, **kwargs)
+        response = await self._inner_get_response(messages=messages, stream=stream, options=options, **kwargs)
         text = response.messages[0].text if response.messages else ""
         yield ChatResponseUpdate(
-            text=TextContent(text=text),
+            contents=[Content(type="text", text=text)],
             role="assistant",
             response_id=response.response_id,
             created_at=response.created_at,
-            model_id=response.model_id,
+            model=response.model,
             finish_reason=response.finish_reason,
         )

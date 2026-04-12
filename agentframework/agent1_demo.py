@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from agent_framework import ChatAgent
-from agent_framework.azure import AzureOpenAIChatClient
+from agent_framework import Agent, ChatOptions
+from agent_framework.openai import OpenAIChatClient
 from azure.identity import AzureCliCredential
 from dotenv import load_dotenv
 from jinja2 import Template
@@ -321,7 +321,7 @@ class Agent1DemoRunner:
             "error": repo_context.get("error"),
         }
 
-    async def _create_agent(self, data_input: str = "") -> ChatAgent:
+    async def _create_agent(self, data_input: str = "") -> Agent:
         """Instantiate the chat agent from template/config; called once by `run()`."""
         prompt = self._load_prompt_template(self._config.prompt_template_path)
         rendered_instructions = self._render_instructions(
@@ -333,17 +333,16 @@ class Agent1DemoRunner:
         model_block = prompt.get("model", {})
         model_id = model_block.get("id") if isinstance(model_block, dict) else model_block
 
-        chat_client = AzureOpenAIChatClient(credential=AzureCliCredential())
-        return ChatAgent(
-            chat_client=chat_client,
+        chat_client = OpenAIChatClient(credential=AzureCliCredential())
+        return Agent(
+            client=chat_client,
             instructions=instructions,
             name=prompt.get("name", "Assistant"),
-            model=model_id,
+            default_options=ChatOptions(model=model_id, max_tokens=prompt.get("max_tokens")),  # type: ignore[typeddict-item]
             tools=prompt.get("tools", []),
-            max_tokens=prompt.get("max_tokens"),
         )
 
-    async def _run_step1(self, agent: ChatAgent, step1_prompt: str) -> str:
+    async def _run_step1(self, agent: Agent, step1_prompt: str) -> str:
         """Execute Step 1 user prompt (streaming or retry path) and return text; called by `run()`."""
         if self._config.stream_output:
             print("Step 1 result (streaming):")

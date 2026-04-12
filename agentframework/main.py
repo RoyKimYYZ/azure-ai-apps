@@ -5,8 +5,8 @@ import sys
 from pathlib import Path
 
 import yaml
-from agent_framework import ChatAgent
-from agent_framework.azure import AzureOpenAIChatClient
+from agent_framework import Agent, ChatOptions
+from agent_framework.openai import OpenAIChatClient
 from azure.identity import AzureCliCredential
 from dotenv import load_dotenv
 from jinja2 import Template
@@ -93,7 +93,7 @@ def render_instructions(template: str, context: dict[str, str]) -> str:
         return Template(template).render(**context)
     return template.format(**context)
 
-async def azure_foundry_general_agent() -> None:
+async def azure_foundry_general_agent() -> Agent:
     load_dotenv()
     prompt_path = Path(
         os.getenv(
@@ -119,19 +119,16 @@ async def azure_foundry_general_agent() -> None:
     endpoint = resolve_env(cfg.azure.openai.endpoint_env)
     if isinstance(endpoint, str):
         endpoint = endpoint.strip().strip('"').strip("'").strip()
-    client_kwargs = {"endpoint": endpoint} if endpoint else {}
-
-    chat_client = AzureOpenAIChatClient(
+    chat_client = OpenAIChatClient(
         credential=AzureCliCredential(),
-        **client_kwargs,
+        azure_endpoint=endpoint or None,
     )
-    agent = ChatAgent(
-        chat_client=chat_client,
+    agent = Agent(
+        client=chat_client,
         instructions=instructions,
         name=prompt.get("name", "GeneralChatAssistant"),
-        model=model_id,
+        default_options=ChatOptions(model=model_id, max_tokens=prompt.get("max_tokens")),  # type: ignore[typeddict-item]
         tools=prompt.get("tools", []),
-        max_tokens=prompt.get("max_tokens"),
     )
     return agent
 
@@ -177,17 +174,17 @@ async def kaito_agent() -> None:
         api_key=api_key,
         default_model=model_id,
     )
-    agent = ChatAgent(
-        max_iterations=prompt.get("max_iterations"),
-        temperature=prompt.get("temperature"),
-        top_p=prompt.get("top_p"),
-        verbose=prompt.get("verbose"),
-        chat_client=chat_client,
+    agent = Agent(
+        client=chat_client,
         instructions=instructions,
         name=prompt.get("name", "KaitoAssistant"),
-        model=model_id,
+        default_options=ChatOptions(
+            model=model_id,
+            temperature=prompt.get("temperature"),  # type: ignore[typeddict-item]
+            top_p=prompt.get("top_p"),  # type: ignore[typeddict-item]
+            max_tokens=prompt.get("max_tokens"),  # type: ignore[typeddict-item]
+        ),
         tools=prompt.get("tools", []),
-        max_tokens=prompt.get("max_tokens"),
     )
 
     logger.info("Sending KAITO greeting prompt")
@@ -198,9 +195,9 @@ async def kaito_agent() -> None:
 
 async def kaito_ragengine_bge_small_agent(
     index_name: str | None = None,
-) -> ChatAgent:
+) -> Agent:
     """
-    Build a ChatAgent that targets a KAITO RAGEngine deployment.
+    Build a Agent that targets a KAITO RAGEngine deployment.
 
     The RAGEngine sits in front of the inference model (phi-4-mini) and adds
     retrieval-augmented generation using a local bge-small-en-v1.5 embedding
@@ -266,13 +263,12 @@ async def kaito_ragengine_bge_small_agent(
         extra_payload={"index_name": rag_index},
     )
 
-    agent = ChatAgent(
-        chat_client=chat_client,
+    agent = Agent(
+        client=chat_client,
         instructions=instructions,
         name=prompt.get("name", "KaitoRAGEngineAssistant"),
-        model=model_id,
+        default_options=ChatOptions(model=model_id, max_tokens=prompt.get("max_tokens")),  # type: ignore[typeddict-item]
         tools=prompt.get("tools", []),
-        max_tokens=prompt.get("max_tokens"),
     )
     logger.info("KAITO RAGEngine agent built successfully")
     return agent
