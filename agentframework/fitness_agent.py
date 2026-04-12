@@ -266,7 +266,7 @@ async def fitness_agent(image_path: str | None = None) -> None:
         "When users ask about goals or trends, use tracked data first and ask clarifying questions if missing data."
     )
 
-    chat_client = OpenAIChatClient(credential=AzureCliCredential())
+    chat_client = OpenAIChatClient(model=cfg.azure.openai.chat_deployment, credential=AzureCliCredential())
     context_provider = DatabaseContextProvider(repo, user_id=user_id)
     agent = Agent(
         client=chat_client,

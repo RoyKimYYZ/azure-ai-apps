@@ -125,7 +125,13 @@ from fitness_background_persistence import (  # noqa: E402
 from openai import RateLimitError  # noqa: E402
 
 from ai_chat_client import KaitoChatClient  # noqa: E402
-from chatbot.auth_gate import get_current_auth_session, render_auth_state_banner, render_login_gate  # noqa: E402
+from chatbot.auth_gate import (  # noqa: E402
+    AuthenticatedSession,
+    get_current_auth_session,
+    logout,
+    render_auth_state_banner,
+    render_login_gate,
+)
 from config import get_config  # noqa: E402
 from fitness_memory import (  # noqa: E402
     DatabaseContextProvider,
@@ -241,6 +247,43 @@ def _post_chat_completion(
 
 
 def _extract_display_text(payload: object) -> str:
+    if payload is None:
+        return ""
+
+    text_attr = getattr(payload, "text", None)
+    if isinstance(text_attr, str) and text_attr.strip():
+        return text_attr.strip()
+
+    def _extract_text_from_contents(contents: Any) -> str:
+        if not isinstance(contents, list):
+            return ""
+        parts: list[str] = []
+        for item in contents:
+            if isinstance(item, str):
+                item_text = item.strip()
+            elif isinstance(item, dict):
+                item_text = str(item.get("text") or item.get("content") or "").strip()
+            else:
+                item_text = str(getattr(item, "text", "") or "").strip()
+            if item_text:
+                parts.append(item_text)
+        return "\n".join(parts).strip()
+
+    messages_attr = getattr(payload, "messages", None)
+    if isinstance(messages_attr, list) and messages_attr:
+        for message in reversed(messages_attr):
+            role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+            contents = message.get("contents") if isinstance(message, dict) else getattr(message, "contents", None)
+            text = _extract_text_from_contents(contents)
+            if text and (role == "assistant" or role is None):
+                return text
+
+        for message in reversed(messages_attr):
+            contents = message.get("contents") if isinstance(message, dict) else getattr(message, "contents", None)
+            text = _extract_text_from_contents(contents)
+            if text:
+                return text
+
     if isinstance(payload, str):
         text = payload.strip()
         if not text:
@@ -731,7 +774,7 @@ def _build_fitness_chat_client(backend_cfg: dict, providers: list[dict]):
             os.environ["AZURE_OPENAI_ENDPOINT"] = resolved_endpoint
         if api_key:
             os.environ["AZURE_OPENAI_API_KEY"] = api_key
-        return OpenAIChatClient(credential=AzureCliCredential()), model_id
+        return OpenAIChatClient(model=model_id, credential=AzureCliCredential()), model_id
     return KaitoChatClient(
         endpoint=resolved_endpoint,
         api_key=api_key or None,
@@ -1034,7 +1077,7 @@ async def _run_with_streaming_placeholder(
                         placeholder.markdown(streamed_text)
 
             response = AgentResponse.from_updates(response_updates)
-            final_text = _extract_display_text(getattr(response, "text", None) or streamed_text or str(response))
+            final_text = _extract_display_text(response) or streamed_text
             if placeholder is not None and final_text != streamed_text:
                 placeholder.markdown(final_text)
             return response
@@ -1782,8 +1825,9 @@ def _build_fitness_runtime(
         "You are a fitness nutrition assistant with access to user profile, body metrics, and meal macro history. "
         "When users ask about goals or trends, use tracked data first and ask clarifying questions if missing data."
     )
+    model_name = _fitness_chat_model(selected_model)
     if chat_client is None:
-        chat_client = OpenAIChatClient(credential=AzureCliCredential())
+        chat_client = OpenAIChatClient(model=model_name, credential=AzureCliCredential())
     # Small-context models (phi family) need tighter limits to stay under their token ceiling.
     _small_context = _is_small_context_model(selected_model)
     meal_limit = 2 if _small_context else 6
@@ -1802,7 +1846,7 @@ def _build_fitness_runtime(
         instructions=instructions,
         name=agent_name,
         default_options=ChatOptions(
-            model=_fitness_chat_model(selected_model),
+            model=model_name,
             max_tokens=800,
             temperature=get_config().ai.defaults.extraction_temperature,
         ),
@@ -1905,12 +1949,25 @@ async def _run_fitness_turn(
             ],
         )
         llm_started = time.perf_counter()
-        result = await _run_with_streaming_placeholder(
-            agent,
-            request_message,
-            thread=thread,
-            placeholder=assistant_placeholder,
-        )
+        try:
+            result = await _run_with_streaming_placeholder(
+                agent,
+                request_message,
+                session=thread,
+                placeholder=assistant_placeholder,
+            )
+        except AttributeError as exc:
+            if "'dict' object has no attribute 'startswith'" not in str(exc):
+                raise
+            logger.warning("Recovered from incompatible serialized session state by starting a new session")
+            _append_memory_debug_event("thread_restore", "incompatible saved state detected, starting fresh session")
+            thread = agent.create_session()
+            result = await _run_with_streaming_placeholder(
+                agent,
+                request_message,
+                session=thread,
+                placeholder=assistant_placeholder,
+            )
         _record_perf_event(
             agent=_FITNESS_AGENT_NAME,
             request_id=request_id,
@@ -1919,7 +1976,7 @@ async def _run_fitness_turn(
             started=llm_started,
             model=_fitness_chat_model(selected_model),
         )
-        content = _extract_display_text(getattr(result, "text", None) or str(result))
+        content = _extract_display_text(result)
         usage = getattr(result, "usage_details", None)
         if usage:
             usage_summary = (
@@ -1932,12 +1989,25 @@ async def _run_fitness_turn(
             _append_memory_debug_event("text_persist", "skipped: model does not support structured output")
     else:
         llm_started = time.perf_counter()
-        result = await _run_with_streaming_placeholder(
-            agent,
-            user_prompt,
-            thread=thread,
-            placeholder=assistant_placeholder,
-        )
+        try:
+            result = await _run_with_streaming_placeholder(
+                agent,
+                user_prompt,
+                session=thread,
+                placeholder=assistant_placeholder,
+            )
+        except AttributeError as exc:
+            if "'dict' object has no attribute 'startswith'" not in str(exc):
+                raise
+            logger.warning("Recovered from incompatible serialized session state by starting a new session")
+            _append_memory_debug_event("thread_restore", "incompatible saved state detected, starting fresh session")
+            thread = agent.create_session()
+            result = await _run_with_streaming_placeholder(
+                agent,
+                user_prompt,
+                session=thread,
+                placeholder=assistant_placeholder,
+            )
         _record_perf_event(
             agent=_FITNESS_AGENT_NAME,
             request_id=request_id,
@@ -1946,7 +2016,7 @@ async def _run_fitness_turn(
             started=llm_started,
             model=_fitness_chat_model(selected_model),
         )
-        content = _extract_display_text(getattr(result, "text", None) or str(result))
+        content = _extract_display_text(result)
         usage = getattr(result, "usage_details", None)
         if usage:
             usage_summary = (
@@ -2091,6 +2161,118 @@ def _save_ui_prefs(prefs: dict[str, Any]) -> None:
         logger.debug("Could not persist UI prefs", exc_info=True)
 
 
+def _browser_prefs_scope_key() -> str:
+    cached = st.session_state.get("_browser_prefs_scope_key")
+    if isinstance(cached, str) and cached:
+        return cached
+
+    default_key = "browser:default"
+    try:
+        headers = getattr(getattr(st, "context", None), "headers", None)
+    except Exception:
+        st.session_state["_browser_prefs_scope_key"] = default_key
+        return default_key
+    if not headers:
+        st.session_state["_browser_prefs_scope_key"] = default_key
+        return default_key
+
+    def _header(name: str) -> str:
+        value = headers.get(name) if hasattr(headers, "get") else None
+        if value is None and hasattr(headers, "get"):
+            value = headers.get(name.title())
+        return str(value or "").strip()
+
+    # Keep fingerprint stable across requests from the same browser session.
+    parts = [_header("user-agent"), _header("accept-language")]
+    raw = "|".join(part for part in parts if part)
+    if not raw:
+        st.session_state["_browser_prefs_scope_key"] = default_key
+        return default_key
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    key = f"browser:{digest}"
+    st.session_state["_browser_prefs_scope_key"] = key
+    return key
+
+
+def _serialize_auth_session(session: AuthenticatedSession | None) -> dict[str, Any] | None:
+    if session is None:
+        return None
+    return {
+        "user_id": session.user_id,
+        "display_name": session.display_name,
+        "email": session.email,
+        "auth_provider": session.auth_provider,
+        "is_demo": session.is_demo,
+    }
+
+
+def _deserialize_auth_session(payload: Any) -> AuthenticatedSession | None:
+    if not isinstance(payload, dict):
+        return None
+    user_id = str(payload.get("user_id") or "").strip()
+    auth_provider = str(payload.get("auth_provider") or "").strip()
+    if not user_id or not auth_provider:
+        return None
+    display_name = payload.get("display_name")
+    email = payload.get("email")
+    return AuthenticatedSession(
+        user_id=user_id,
+        display_name=str(display_name).strip() if isinstance(display_name, str) else None,
+        email=str(email).strip() if isinstance(email, str) else None,
+        auth_provider=auth_provider,
+        is_demo=bool(payload.get("is_demo")),
+    )
+
+
+def _restore_auth_session_from_prefs(ui_prefs: dict[str, Any]) -> None:
+    existing = get_current_auth_session()
+    if existing is not None:
+        return
+
+    browser_key = _browser_prefs_scope_key()
+    scoped_map = ui_prefs.get("auth_session_by_browser")
+    scoped_sessions = scoped_map if isinstance(scoped_map, dict) else {}
+
+    restored_payload = scoped_sessions.get(browser_key)
+    # One-time migration from legacy global key to browser-scoped storage.
+    if restored_payload is None and "auth_session" in ui_prefs:
+        restored_payload = ui_prefs.get("auth_session")
+        if restored_payload is not None:
+            scoped_sessions[browser_key] = restored_payload
+            ui_prefs["auth_session_by_browser"] = scoped_sessions
+        ui_prefs.pop("auth_session", None)
+        _save_ui_prefs(ui_prefs)
+
+    restored = _deserialize_auth_session(restored_payload)
+    if restored is not None:
+        st.session_state["auth_session"] = restored
+        st.session_state["fitness_active_user_id"] = restored.user_id
+        st.session_state["fitness_user_name"] = restored.user_id
+
+
+def _persist_auth_session_to_prefs(ui_prefs: dict[str, Any]) -> None:
+    current = get_current_auth_session()
+    serialized = _serialize_auth_session(current)
+
+    browser_key = _browser_prefs_scope_key()
+    scoped_map = ui_prefs.get("auth_session_by_browser")
+    scoped_sessions = scoped_map if isinstance(scoped_map, dict) else {}
+    if scoped_sessions.get(browser_key) != serialized:
+        if serialized is None:
+            scoped_sessions.pop(browser_key, None)
+        else:
+            scoped_sessions[browser_key] = serialized
+
+        if scoped_sessions:
+            ui_prefs["auth_session_by_browser"] = scoped_sessions
+        else:
+            ui_prefs.pop("auth_session_by_browser", None)
+
+        # Ensure legacy global key does not reintroduce cross-browser sharing.
+        ui_prefs.pop("auth_session", None)
+        _save_ui_prefs(ui_prefs)
+
+
 AGENT_OPTIONS = [agent.get("name") for agent in AGENTS if agent.get("name") and agent.get("enabled", True)] or [
     "Azure Foundry General",
     "Kaito Assistant",
@@ -2106,6 +2288,8 @@ agent1_prompt_template_path = ""
 agent1_system_prompt_override = ""
 agent1_trace_placeholder: Any | None = None
 ui_prefs = _load_ui_prefs()
+_restore_auth_session_from_prefs(ui_prefs)
+_persist_auth_session_to_prefs(ui_prefs)
 
 with st.sidebar:
     st.header("Settings")
@@ -2400,9 +2584,15 @@ if right_col is not None and agent_choice == "Agent1 Demo":
 
 if right_col is not None and agent_choice == "Fitness Nutrition":
     with right_col:
-        st.subheader("Fitness Context")
+        title_col, action_col = st.columns([4, 1], vertical_alignment="center")
+        with title_col:
+            st.subheader("Fitness Context")
         render_auth_state_banner()
         _auth_session = get_current_auth_session()
+        with action_col:
+            if _auth_session is not None:
+                if st.button("Log out", key="fitness_logout_button", type="secondary", use_container_width=True):
+                    logout()
         if _auth_session is None:
             render_login_gate()
             st.caption("Sign in with Microsoft (or continue as demo) to load fitness memory.")
@@ -2711,7 +2901,7 @@ with chat_col:
                     result = asyncio.run(run_with_retry(agent, history_messages))
                     llm_elapsed = time.perf_counter() - llm_started
                     model_call_elapsed = llm_elapsed
-                    content = _extract_display_text(getattr(result, "text", None) or str(result))
+                    content = _extract_display_text(result)
                     usage = getattr(result, "usage_details", None)
                     if usage:
                         usage_summary = (
@@ -2740,7 +2930,7 @@ with chat_col:
                     result = asyncio.run(run_with_retry(agent, prompt))
                     llm_elapsed = time.perf_counter() - llm_started
                     model_call_elapsed = llm_elapsed
-                    content = _extract_display_text(getattr(result, "text", None) or str(result))
+                    content = _extract_display_text(result)
                     usage = getattr(result, "usage_details", None)
                     if usage:
                         usage_summary = (
@@ -2769,7 +2959,7 @@ with chat_col:
                     result = asyncio.run(run_with_retry(agent, prompt))
                     llm_elapsed = time.perf_counter() - llm_started
                     model_call_elapsed = llm_elapsed
-                    content = _extract_display_text(getattr(result, "text", None) or str(result))
+                    content = _extract_display_text(result)
                     usage = getattr(result, "usage_details", None)
                     if usage:
                         usage_summary = (

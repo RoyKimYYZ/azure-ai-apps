@@ -120,6 +120,7 @@ async def azure_foundry_general_agent() -> Agent:
     if isinstance(endpoint, str):
         endpoint = endpoint.strip().strip('"').strip("'").strip()
     chat_client = OpenAIChatClient(
+        model=model_id,
         credential=AzureCliCredential(),
         azure_endpoint=endpoint or None,
     )

@@ -333,7 +333,7 @@ class Agent1DemoRunner:
         model_block = prompt.get("model", {})
         model_id = model_block.get("id") if isinstance(model_block, dict) else model_block
 
-        chat_client = OpenAIChatClient(credential=AzureCliCredential())
+        chat_client = OpenAIChatClient(model=model_id, credential=AzureCliCredential())
         return Agent(
             client=chat_client,
             instructions=instructions,

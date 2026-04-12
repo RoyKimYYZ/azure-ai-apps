@@ -26,6 +26,7 @@ dev = [
     "agent-framework",
     "pytest>=9.0.2",
     "types-pyyaml>=6.0.12.20260408",
+    "pytest-playwright>=0.7.2",
 ]
 [tool.ruff]  # Ruff configuration table (Python linter/formatter)
 
@@ -35,6 +36,11 @@ lint.select = ["E", "F", "I", "UP", "B", "SIM", "W"]  # Enable these rule famili
 lint.ignore = ["E501"]  # Disable specific rules (E501 = line too long)
 lint.fixable = ["ALL"]  # Allow Ruff to auto-fix all fixable rules when run with `--fix`
 exclude = [".venv", "__pycache__", "build", "dist"]  # Paths Ruff should skip when scanning files
+
+[tool.pytest.ini_options]
+markers = [
+    "ui: Playwright-based UI tests (require a running Streamlit server)",
+]
 
 [tool.mypy]  # mypy configuration (static type checker)
 python_version = "3.13"  # Target Python version for type checking

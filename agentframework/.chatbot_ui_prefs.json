@@ -3,6 +3,29 @@
   "ai_provider_by_agent": {
     "Fitness Nutrition": "AI Foundry"
   },
+  "auth_session_by_browser": {
+    "browser:077824e1269565b9": {
+      "auth_provider": "demo",
+      "display_name": "Demo User",
+      "email": null,
+      "is_demo": true,
+      "user_id": "demo-user"
+    },
+    "browser:200ab9706167aea0": {
+      "auth_provider": "demo",
+      "display_name": "Demo User",
+      "email": null,
+      "is_demo": true,
+      "user_id": "demo-user"
+    },
+    "browser:cd8bee341ca92b10": {
+      "auth_provider": "demo",
+      "display_name": "Demo User",
+      "email": null,
+      "is_demo": true,
+      "user_id": "demo-user"
+    }
+  },
   "model_by_agent": {
     "Agent1 Demo": "gpt-5.2-chat",
     "Fitness Nutrition": "gpt-5-mini",

@@ -82,6 +82,8 @@ def set_auth_session(session: AuthenticatedSession | None) -> None:
     st.session_state.auth_session = session
     if session:
         st.session_state.fitness_active_user_id = session.user_id
+    else:
+        st.session_state.fitness_active_user_id = None
 
 
 def require_auth() -> str:

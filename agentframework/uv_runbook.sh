@@ -48,11 +48,11 @@ uv cache clean
 # Run linting
 uv run ruff check .
 
- # Run type checking
- uv run mypy .
+# Run type checking
+uv run mypy .
 
- # Run tests
- uv run pytest
+# Run tests
+uv run pytest
 
 # Testing uv run with a sample command
 
