@@ -31,6 +31,14 @@ from diagnostics_store import (  # noqa: E402
 )
 
 from config import get_config  # noqa: E402
+try:  # noqa: E402
+    from auth_gate import get_current_auth_session
+except (ModuleNotFoundError, ImportError):  # noqa: E402
+    from chatbot.auth_gate import get_current_auth_session
+try:  # noqa: E402
+    from permissions import has_diagnostics_access
+except (ModuleNotFoundError, ImportError):  # noqa: E402
+    from chatbot.permissions import has_diagnostics_access
 
 # ── Page config ──────────────────────────────────────────────────────
 _cfg = get_config()
@@ -45,6 +53,14 @@ st.markdown(
     '<style>[data-testid="stSidebarNav"]{display:none!important}</style>',
     unsafe_allow_html=True,
 )
+
+_auth_session = get_current_auth_session()
+if _auth_session is None:
+    st.error("Sign in is required to access diagnostics.")
+    st.stop()
+if not has_diagnostics_access(_auth_session):
+    st.error("You do not have permission to access diagnostics.")
+    st.stop()
 
 # ── Sidebar: agent selector & controls ───────────────────────────────
 all_agents = get_all_agents()

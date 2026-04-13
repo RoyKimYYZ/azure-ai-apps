@@ -151,6 +151,10 @@ from fitness_memory import (  # noqa: E402
     get_fitness_repository,
 )
 from main import azure_foundry_general_agent, load_prompt_template, render_instructions  # noqa: E402
+try:  # noqa: E402
+    from permissions import can_use_agent, has_diagnostics_access, list_allowed_agents
+except (ModuleNotFoundError, ImportError):  # noqa: E402
+    from chatbot.permissions import can_use_agent, has_diagnostics_access, list_allowed_agents
 from run_utils import get_backoff_seconds, run_with_retry  # noqa: E402
 
 _CFG = get_config()
@@ -2507,12 +2511,17 @@ _persist_auth_session_to_prefs(ui_prefs)
 
 with st.sidebar:
     st.header("Settings")
+    _current_auth_session = get_current_auth_session()
+    _allowed_agents = list_allowed_agents(_current_auth_session, AGENT_OPTIONS)
+    if not _allowed_agents:
+        _allowed_agents = [name for name in AGENT_OPTIONS if name == "Fitness Nutrition"] or AGENT_OPTIONS[:1]
+
     saved_agent_choice = ui_prefs.get("agent_choice")
-    if isinstance(saved_agent_choice, str) and saved_agent_choice in AGENT_OPTIONS:  # noqa: SIM108
-        default_agent_index = AGENT_OPTIONS.index(saved_agent_choice)
+    if isinstance(saved_agent_choice, str) and saved_agent_choice in _allowed_agents:  # noqa: SIM108
+        default_agent_index = _allowed_agents.index(saved_agent_choice)
     else:
-        default_agent_index = AGENT_OPTIONS.index("Fitness Nutrition") if "Fitness Nutrition" in AGENT_OPTIONS else 0
-    agent_choice = st.selectbox("Agent", AGENT_OPTIONS, index=default_agent_index)
+        default_agent_index = _allowed_agents.index("Fitness Nutrition") if "Fitness Nutrition" in _allowed_agents else 0
+    agent_choice = st.selectbox("Agent", _allowed_agents, index=default_agent_index)
     if ui_prefs.get("agent_choice") != agent_choice:
         ui_prefs["agent_choice"] = agent_choice
         _save_ui_prefs(ui_prefs)
@@ -2662,14 +2671,19 @@ with st.sidebar:
             st.caption("No completions yet.")
 
     st.divider()
-    _diag_url = f"/diagnostics?agent={urllib.request.pathname2url(agent_choice)}"
-    st.markdown(
-        f'<a href="{_diag_url}" target="_blank" '
-        f'style="display:inline-flex;align-items:center;gap:0.35rem;'
-        f'font-size:0.85rem;color:#4a9eff;text-decoration:none;">'
-        f'{get_config().ui.labels.diagnostics_link}</a>',
-        unsafe_allow_html=True,
-    )
+    if has_diagnostics_access(_current_auth_session):
+        _diag_url = f"/diagnostics?agent={urllib.request.pathname2url(agent_choice)}"
+        st.markdown(
+            f'<a href="{_diag_url}" target="_blank" '
+            f'style="display:inline-flex;align-items:center;gap:0.35rem;'
+            f'font-size:0.85rem;color:#4a9eff;text-decoration:none;">'
+            f'{get_config().ui.labels.diagnostics_link}</a>',
+            unsafe_allow_html=True,
+        )
+
+if not can_use_agent(get_current_auth_session(), agent_choice, AGENT_OPTIONS):
+    st.error(f"You are not allowed to use the selected agent: {agent_choice}")
+    st.stop()
 
 if agent_choice in {"Fitness Nutrition", "Agent1 Demo"}:
     chat_col, right_col = st.columns([3.2, 1.2], gap="large")
@@ -3044,6 +3058,9 @@ with chat_col:
 
     prompt = st.chat_input("Ask something...", key=chat_input_key)
     if prompt:
+        if not can_use_agent(get_current_auth_session(), agent_choice, AGENT_OPTIONS):
+            st.error(f"You are not allowed to use the selected agent: {agent_choice}")
+            st.stop()
         logger.info("User prompt received. Agent=%s Provider=%s Model=%s", agent_choice, provider_name, model)
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):

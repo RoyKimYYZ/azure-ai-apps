@@ -269,3 +269,21 @@ demo_mode:
 # ── Admin page ──────────────────────────────────
 admin:
   enabled: true
+
+# ── Role-based permissions ──────────────────────
+rbac:
+  enabled: true
+  super_admin_emails:
+    - rsx79@hotmail.com
+  default_authenticated_agents:
+    - Fitness Nutrition
+  user_permissions:
+    - email: rsx79@hotmail.com
+      admin: true
+      diagnostics: true
+      allowed_agents:
+        - General Chat Assistant
+        - Kaito Assistant
+        - KAITO RAG Assistant
+        - Fitness Nutrition
+        - Agent1 Demo

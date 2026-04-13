@@ -337,6 +337,24 @@ class AdminConfig(BaseModel):
     enabled: bool = True
 
 
+class UserPermissionConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    email: str
+    admin: bool = False
+    diagnostics: bool = False
+    allowed_agents: list[str] = Field(default_factory=list)
+
+
+class RbacConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = True
+    super_admin_emails: list[str] = Field(default_factory=list)
+    default_authenticated_agents: list[str] = Field(default_factory=lambda: ["Fitness Nutrition"])
+    user_permissions: list[UserPermissionConfig] = Field(default_factory=list)
+
+
 # ── Root config model ───────────────────────────
 
 
@@ -355,3 +373,4 @@ class AppConfig(BaseModel):
     external_identities: ExternalIdentitiesConfig = Field(default_factory=ExternalIdentitiesConfig)
     demo_mode: DemoModeConfig = Field(default_factory=DemoModeConfig)
     admin: AdminConfig = Field(default_factory=AdminConfig)
+    rbac: RbacConfig = Field(default_factory=RbacConfig)
