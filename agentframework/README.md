@@ -119,7 +119,7 @@ FITNESS_DB_PATH="agentframework.db"
 
 ```bash
 FITNESS_DB_BACKEND="azuresql"
-AZURE_SQL_SERVER="<logical-server-name>.database.windows.net"
+AZURE_SQL_SERVER="rkak.database.windows.net"
 AZURE_SQL_DATABASE="<database-name>"
 AZURE_SQL_SCHEMA="dbo"
 AZURE_SQL_DRIVER="ODBC Driver 18 for SQL Server"

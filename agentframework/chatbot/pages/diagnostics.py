@@ -55,10 +55,10 @@ st.markdown(
 )
 
 _auth_session = get_current_auth_session()
-if _auth_session is None:
+if _auth_session is None and not _cfg.temporary_access.allow_anonymous_diagnostics_page:
     st.error("Sign in is required to access diagnostics.")
     st.stop()
-if not has_diagnostics_access(_auth_session):
+if _auth_session is not None and not has_diagnostics_access(_auth_session):
     st.error("You do not have permission to access diagnostics.")
     st.stop()
 

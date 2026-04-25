@@ -120,9 +120,16 @@ def render_auth_state_banner() -> None:
     if session.is_demo:
         st.warning(
             f"🎭 **Demo Mode** – You are using the app anonymously as '{session.display_name}'. "
-            f"Data is isolated to this demo user only. "
-            f"[Log in](/) to access your personal fitness data."
+            f"Data is isolated to this demo user only."
         )
+        config = get_config()
+        has_microsoft = any(
+            provider.provider_name == "microsoft" and provider.enabled
+            for provider in config.external_identities.providers
+        )
+        if config.external_identities.enabled and has_microsoft:
+            if st.button("Login with Microsoft", key="demo_switch_to_microsoft", type="primary"):
+                logout()
     else:
         provider_label = session.auth_provider.replace("_", " ").title()
         email_text = f" ({session.email})" if session.email else ""
@@ -375,6 +382,27 @@ def _initiate_demo_mode(demo_config: Any) -> None:
     )
     set_auth_session(demo_session)
     st.rerun()
+
+
+def ensure_demo_session() -> AuthenticatedSession | None:
+    """Auto-establish a demo session when demo mode is enabled and no session exists."""
+    session = get_current_auth_session()
+    if session is not None:
+        return session
+
+    config = get_config()
+    if not config.demo_mode.enabled:
+        return None
+
+    demo_session = AuthenticatedSession(
+        user_id=config.demo_mode.demo_user_id,
+        display_name=config.demo_mode.demo_user_name,
+        email=None,
+        auth_provider="demo",
+        is_demo=True,
+    )
+    set_auth_session(demo_session)
+    return demo_session
 
 
 def enforce_auth_for_operation(

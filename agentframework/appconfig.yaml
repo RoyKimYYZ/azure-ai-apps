@@ -194,6 +194,13 @@ ui:
     show_completion_metrics: true
     metrics_max_entries: 50
     show_diagnostics_link: true
+    agent_dropdown_visible_agents:
+      - Fitness Nutrition
+      # Uncomment additional agents to show them in the dropdown:
+      # - General Chat Assistant
+      # - Kaito Assistant
+      # - KAITO RAG Assistant
+      # - Agent1 Demo
 
   chat:
     welcome_message: "Hello! How can I help you today?"
@@ -240,13 +247,13 @@ external_identities:
       scope: "openid profile email"
       enabled: true
   # Example provider configuration (uncomment and customize):
-  # providers:
-  #   - provider_name: microsoft
-  #     client_id_env: OAUTH_MICROSOFT_CLIENT_ID
-  #     client_secret_env: OAUTH_MICROSOFT_CLIENT_SECRET
-  #     authority_url: https://login.microsoftonline.com/common
-  #     scope: "openid profile email"
-  #     enabled: true
+  providers:
+    - provider_name: microsoft
+      client_id_env: OAUTH_MICROSOFT_CLIENT_ID
+      client_secret_env: OAUTH_MICROSOFT_CLIENT_SECRET
+      authority_url: https://login.microsoftonline.com/common
+      scope: "openid profile email"
+      enabled: true
   #   - provider_name: google
   #     client_id_env: OAUTH_GOOGLE_CLIENT_ID
   #     client_secret_env: OAUTH_GOOGLE_CLIENT_SECRET
@@ -271,6 +278,12 @@ demo_mode:
 admin:
   enabled: true
 
+# ── Temporary access overrides ──────────────────
+# For short-lived demo situations only. Revert both flags to false after use.
+temporary_access:
+  allow_anonymous_admin_page: true
+  allow_anonymous_diagnostics_page: true
+
 # ── Role-based permissions ──────────────────────
 rbac:
   enabled: true
@@ -283,8 +296,8 @@ rbac:
       admin: true
       diagnostics: true
       allowed_agents:
-        - General Chat Assistant
-        - Kaito Assistant
-        - KAITO RAG Assistant
+        # - General Chat Assistant
+        # - Kaito Assistant
+        # - KAITO RAG Assistant
         - Fitness Nutrition
-        - Agent1 Demo
+        # - Agent1 Demo

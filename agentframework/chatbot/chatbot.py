@@ -128,6 +128,7 @@ from ai_chat_client import KaitoChatClient  # noqa: E402
 try:  # noqa: E402
     from auth_gate import (
         AuthenticatedSession,
+        ensure_demo_session,
         get_current_auth_session,
         logout,
         render_auth_state_banner,
@@ -136,6 +137,7 @@ try:  # noqa: E402
 except (ModuleNotFoundError, ImportError):  # noqa: E402
     from chatbot.auth_gate import (
         AuthenticatedSession,
+        ensure_demo_session,
         get_current_auth_session,
         logout,
         render_auth_state_banner,
@@ -2485,6 +2487,8 @@ def _restore_auth_session_from_prefs(ui_prefs: dict[str, Any]) -> None:
         _save_ui_prefs(ui_prefs)
 
     restored = _deserialize_auth_session(restored_payload)
+    if restored is not None and restored.is_demo:
+        restored = None
     if restored is not None:
         st.session_state["auth_session"] = restored
         st.session_state["fitness_active_user_id"] = restored.user_id
@@ -2494,6 +2498,8 @@ def _restore_auth_session_from_prefs(ui_prefs: dict[str, Any]) -> None:
 def _persist_auth_session_to_prefs(ui_prefs: dict[str, Any]) -> None:
     current = get_current_auth_session()
     serialized = _serialize_auth_session(current)
+    if current is not None and current.is_demo:
+        serialized = None
 
     browser_key = _browser_prefs_scope_key()
     scoped_map = ui_prefs.get("auth_session_by_browser")
@@ -2520,6 +2526,10 @@ AGENT_OPTIONS = [agent.get("name") for agent in AGENTS if agent.get("name") and 
     "Fitness Nutrition",
     "Agent1 Demo",
 ]
+# Filter to visible agents from config
+visible_agent_names = getattr(get_config().ui.sidebar, "agent_dropdown_visible_agents", None)
+if visible_agent_names:
+    AGENT_OPTIONS = [name for name in AGENT_OPTIONS if name in visible_agent_names]
 uploaded_food_image = None
 uploaded_food_image_bytes = None
 uploaded_food_image_name = ""
@@ -2844,8 +2854,10 @@ if right_col is not None and agent_choice == "Fitness Nutrition":
             if _auth_session is not None and st.button("Log out", key="fitness_logout_button", type="secondary", use_container_width=True):
                     logout()
         if _auth_session is None:
+            _auth_session = ensure_demo_session()
+        if _auth_session is None:
             render_login_gate()
-            st.caption("Sign in with Microsoft (or continue as demo) to load fitness memory.")
+            st.caption("Sign in with Microsoft to load fitness memory.")
             st.stop()
 
         memory_user_id = _auth_session.user_id

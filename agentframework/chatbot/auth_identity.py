@@ -110,10 +110,12 @@ class IdentityClaimNormalizer:
         if not subject_id:
             raise ValueError("Microsoft ID token missing 'oid' field")
 
+        email = claims.get("email") or claims.get("preferred_username") or claims.get("upn")
+
         return ProviderIdentityClaim(
             provider_name="microsoft",
             subject_id=str(subject_id),
-            email=claims.get("email"),
+            email=email,
             email_verified=claims.get("email_verified", False),
             given_name=claims.get("given_name"),
             family_name=claims.get("family_name"),

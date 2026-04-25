@@ -232,6 +232,10 @@ class UISidebarConfig(BaseModel):
     show_completion_metrics: bool = True
     metrics_max_entries: int = 50
     show_diagnostics_link: bool = True
+    agent_dropdown_visible_agents: list[str] = Field(
+        default_factory=list,
+        description="List of agent names to show in the dropdown. Empty list means show all enabled agents."
+    )
 
 
 class UIChatConfig(BaseModel):
@@ -337,6 +341,13 @@ class AdminConfig(BaseModel):
     enabled: bool = True
 
 
+class TemporaryAccessConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    allow_anonymous_admin_page: bool = False
+    allow_anonymous_diagnostics_page: bool = False
+
+
 class UserPermissionConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -373,4 +384,5 @@ class AppConfig(BaseModel):
     external_identities: ExternalIdentitiesConfig = Field(default_factory=ExternalIdentitiesConfig)
     demo_mode: DemoModeConfig = Field(default_factory=DemoModeConfig)
     admin: AdminConfig = Field(default_factory=AdminConfig)
+    temporary_access: TemporaryAccessConfig = Field(default_factory=TemporaryAccessConfig)
     rbac: RbacConfig = Field(default_factory=RbacConfig)
