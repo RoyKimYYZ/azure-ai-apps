@@ -2019,6 +2019,28 @@ async def _persist_fitness_turn_background_async(request: FitnessPersistenceRequ
         _invalidate_fitness_snapshot_cache(request.user_id)
 
 
+def _load_fitness_instructions(default: str) -> str:
+    """Load Fitness agent system prompt from configured prompt_file, falling back to default."""
+    try:
+        agents = getattr(get_config().ai, "agents", []) or []
+        agent_cfg = next((a for a in agents if a.name == _FITNESS_AGENT_NAME), None)
+        prompt_file = getattr(agent_cfg, "prompt_file", "") if agent_cfg else ""
+        if not prompt_file:
+            return default
+        prompt_path = Path(prompt_file)
+        if not prompt_path.is_absolute():
+            prompt_path = PROJECT_ROOT / prompt_path
+        if not prompt_path.exists():
+            logger.warning("Fitness prompt_file not found at %s; using default instructions", prompt_path)
+            return default
+        prompt = load_prompt_template(prompt_path)
+        template = prompt.get("instructions", default)
+        return render_instructions(template, {})
+    except Exception:  # noqa: BLE001 - fall back to default on any load/render failure
+        logger.exception("Failed to load Fitness prompt_file; using default instructions")
+        return default
+
+
 def _build_fitness_runtime(
     user_id: str,
     selected_model: str | None,
@@ -2029,10 +2051,11 @@ def _build_fitness_runtime(
     repo = repo or get_fitness_repository(_fitness_db_path())
     session_key = f"fitness:{user_id}"
     agent_name = "fitness_agent"
-    instructions = (
+    default_instructions = (
         "You are a fitness nutrition assistant with access to user profile, body metrics, and meal macro history. "
         "When users ask about goals or trends, use tracked data first and ask clarifying questions if missing data."
     )
+    instructions = _load_fitness_instructions(default_instructions)
     model_name = _fitness_chat_model(selected_model)
     if chat_client is None:
         if _clean_env(os.getenv("AZURE_OPENAI_API_KEY")):
