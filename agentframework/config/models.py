@@ -139,6 +139,7 @@ class ProviderConfig(BaseModel):
     default_index_name: str = ""
     embedding_model: str = ""
     request_model: str = ""
+    chat_completions_models: list[str] = Field(default_factory=list)
 
 
 class AgentAvailableProvider(BaseModel):

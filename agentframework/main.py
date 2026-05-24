@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 from agent_framework_compat import Agent, ChatOptions
 from agent_framework.openai import OpenAIChatClient
+from agent_framework.openai import OpenAIChatCompletionClient
 from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
 from jinja2 import Template
@@ -119,7 +120,13 @@ async def azure_foundry_general_agent() -> Agent:
     endpoint = resolve_env(cfg.azure.openai.endpoint_env)
     if isinstance(endpoint, str):
         endpoint = endpoint.strip().strip('"').strip("'").strip()
-    chat_client = OpenAIChatClient(
+    foundry_provider = next(
+        (p for p in cfg.ai.providers if p.name == "AI Foundry"),
+        None,
+    )
+    cc_models = list(foundry_provider.chat_completions_models) if foundry_provider else []
+    client_cls = OpenAIChatCompletionClient if model_id in cc_models else OpenAIChatClient
+    chat_client = client_cls(
         model=model_id,
         credential=DefaultAzureCredential(exclude_interactive_browser_credential=True),
         azure_endpoint=endpoint or None,

@@ -97,6 +97,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agent_framework_compat import Agent, AgentResponse, ChatOptions, Content, Message  # noqa: E402
 from agent_framework.openai import OpenAIChatClient  # noqa: E402
+from agent_framework.openai import OpenAIChatCompletionClient  # noqa: E402
 from azure.identity import DefaultAzureCredential  # noqa: E402
 from diagnostics_store import (  # noqa: E402
     DiagnosticsTurn,
@@ -125,6 +126,7 @@ from fitness_background_persistence import (  # noqa: E402
 from openai import RateLimitError  # noqa: E402
 
 from ai_chat_client import KaitoChatClient  # noqa: E402
+
 try:  # noqa: E402
     from auth_gate import (
         AuthenticatedSession,
@@ -153,10 +155,25 @@ from fitness_memory import (  # noqa: E402
     get_fitness_repository,
 )
 from main import azure_foundry_general_agent, load_prompt_template, render_instructions  # noqa: E402
+
 try:  # noqa: E402
-    from permissions import can_use_agent, has_diagnostics_access, list_allowed_agents
+    from permissions import can_use_agent, has_admin_access, has_diagnostics_access, list_allowed_agents
 except (ModuleNotFoundError, ImportError):  # noqa: E402
-    from chatbot.permissions import can_use_agent, has_diagnostics_access, list_allowed_agents
+    from chatbot.permissions import can_use_agent, has_admin_access, has_diagnostics_access, list_allowed_agents
+try:  # noqa: E402
+    from prompt_library import (
+        VISIBILITY_GLOBAL,
+        VISIBILITY_PRIVATE,
+        PromptRecord,
+        get_prompt_repository,
+    )
+except (ModuleNotFoundError, ImportError):  # noqa: E402
+    from chatbot.prompt_library import (
+        VISIBILITY_GLOBAL,
+        VISIBILITY_PRIVATE,
+        PromptRecord,
+        get_prompt_repository,
+    )
 from run_utils import get_backoff_seconds, run_with_retry  # noqa: E402
 
 _CFG = get_config()
@@ -933,6 +950,19 @@ def _build_kaito_ragengine_agent(model: str, index_name: str | None = None) -> A
     )
 
 
+def _openai_client_cls(model_id: str, provider_cfg: dict | None = None):
+    """Return the appropriate OpenAI chat client class for *model_id*.
+
+    Models listed under ``chat_completions_models`` in the provider config only
+    support the Chat Completions API (not the newer Responses API).  All other
+    models default to ``OpenAIChatClient`` which uses the Responses API.
+    """
+    cc_models: list[str] = (provider_cfg or {}).get("chat_completions_models", [])
+    if model_id in cc_models:
+        return OpenAIChatCompletionClient
+    return OpenAIChatClient
+
+
 def _build_fitness_chat_client(backend_cfg: dict, providers: list[dict]):
     """Return (chat_client, model_id) for a Fitness Nutrition backend config entry."""
     provider_name = backend_cfg.get("provider", "AI Foundry")
@@ -952,10 +982,11 @@ def _build_fitness_chat_client(backend_cfg: dict, providers: list[dict]):
     if provider_name == "AI Foundry":
         if resolved_endpoint:
             os.environ["AZURE_OPENAI_ENDPOINT"] = resolved_endpoint
+        client_cls = _openai_client_cls(model_id, provider_cfg)
         if api_key:
             os.environ["AZURE_OPENAI_API_KEY"] = api_key
-            return OpenAIChatClient(model=model_id), model_id
-        return OpenAIChatClient(
+            return client_cls(model=model_id), model_id
+        return client_cls(
             model=model_id,
             credential=DefaultAzureCredential(exclude_interactive_browser_credential=True),
         ), model_id
@@ -1159,7 +1190,7 @@ async def _persist_text_turn_memory(
         result = await run_with_retry(
             agent,
             extraction_prompt,
-            response_format=TextTurnStructuredOutput,
+            options={"response_format": TextTurnStructuredOutput},
         )
         _record_perf_event(
             agent=_FITNESS_AGENT_NAME,
@@ -1914,7 +1945,7 @@ async def _persist_photo_turn_memory(
         extraction_result = await run_with_retry(
             agent,
             extraction_message,
-            response_format=PhotoSubmissionStructuredOutput,
+            options={"response_format": PhotoSubmissionStructuredOutput},
         )
         _record_perf_event(
             agent=_FITNESS_AGENT_NAME,
@@ -2060,10 +2091,12 @@ def _build_fitness_runtime(
     instructions = _load_fitness_instructions(default_instructions)
     model_name = _fitness_chat_model(selected_model)
     if chat_client is None:
+        _foundry_provider_cfg = next((p for p in PROVIDERS if p.get("name") == "AI Foundry"), {})
+        _client_cls = _openai_client_cls(model_name, _foundry_provider_cfg)
         if _clean_env(os.getenv("AZURE_OPENAI_API_KEY")):
-            chat_client = OpenAIChatClient(model=model_name)
+            chat_client = _client_cls(model=model_name)
         else:
-            chat_client = OpenAIChatClient(
+            chat_client = _client_cls(
                 model=model_name,
                 credential=DefaultAzureCredential(exclude_interactive_browser_credential=True),
             )
@@ -2103,6 +2136,7 @@ async def _run_fitness_turn(
     image_bytes: bytes | None,
     image_name: str | None,
     assistant_placeholder: Any | None = None,
+    persist_status_placeholder: Any | None = None,
     request_id: str = "",
     chat_client=None,
     backend_cfg: dict[str, Any] | None = None,
@@ -2288,27 +2322,44 @@ async def _run_fitness_turn(
         logger.exception("Could not save fitness thread state")
         _append_memory_debug_event("thread_save", "failed to serialize thread state")
 
-    schedule_fitness_persistence(
-        FitnessPersistenceRequest(
-            user_id=user_id,
-            request_id=request_id,
-            selected_model=selected_model,
-            backend_cfg=backend_cfg,
-            user_prompt=user_prompt,
-            assistant_text=content,
-            image_bytes=image_bytes,
-            image_name=image_name,
-            session_key=session_key,
-            agent_name=agent_name,
-            serialized_thread=serialized_thread,
-        ),
-        hooks=FitnessPersistenceHooks(
-            persist_async=_persist_fitness_turn_background_async,
-            record_log=_diag_record_log,
-            logger=logger,
-        ),
+    persistence_request = FitnessPersistenceRequest(
+        user_id=user_id,
+        request_id=request_id,
+        selected_model=selected_model,
+        backend_cfg=backend_cfg,
+        user_prompt=user_prompt,
+        assistant_text=content,
+        image_bytes=image_bytes,
+        image_name=image_name,
+        session_key=session_key,
+        agent_name=agent_name,
+        serialized_thread=serialized_thread,
     )
-    _append_memory_debug_event("background_persist", "scheduled memory persistence worker")
+
+    # Persist inline by default so UI panels can read updated profile/metrics
+    # immediately after assistant confirmation. Set FITNESS_PERSISTENCE_MODE=async
+    # to restore background persistence behavior.
+    persistence_mode = _clean_env(os.getenv("FITNESS_PERSISTENCE_MODE", "inline")).lower()
+    if persistence_mode in {"async", "background"}:
+        schedule_fitness_persistence(
+            persistence_request,
+            hooks=FitnessPersistenceHooks(
+                persist_async=_persist_fitness_turn_background_async,
+                record_log=_diag_record_log,
+                logger=logger,
+            ),
+        )
+        _append_memory_debug_event("background_persist", "scheduled memory persistence worker")
+    else:
+        if persist_status_placeholder is not None:
+            persist_status_placeholder.markdown(
+                "<div style='color:#888;font-size:0.82rem;margin-top:0.35rem;'>⏳ Saving to memory…</div>",
+                unsafe_allow_html=True,
+            )
+        await _persist_fitness_turn_background_async(persistence_request)
+        if persist_status_placeholder is not None:
+            persist_status_placeholder.empty()
+        _append_memory_debug_event("background_persist", "completed inline persistence")
 
     _append_memory_debug_event("run_end", "fitness turn completed")
 
@@ -2402,6 +2453,222 @@ def _save_ui_prefs(prefs: dict[str, Any]) -> None:
         PREFS_PATH.write_text(json.dumps(prefs, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
     except Exception:
         logger.debug("Could not persist UI prefs", exc_info=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Prompt Library — sidebar picker + manage UI
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PROMPT_LIB_PENDING_KEY = "pending_prompt"
+_PROMPT_LIB_PENDING_ID_KEY = "pending_prompt_id"
+
+
+def _prompt_lib_user_id(auth_session: Any) -> str:
+    """Return the user_id to use for prompt-library reads and writes.
+
+    Authenticated: resolves fitness uid → auth session uid.
+    Unauthenticated / demo: uses the configured demo_user_id so prompts are
+    shared across unauthenticated sessions (same account, shared library).
+    """
+    fitness_uid = str(st.session_state.get("fitness_active_user_id") or "").strip()
+    if fitness_uid:
+        return fitness_uid
+    if auth_session is not None and getattr(auth_session, "user_id", None):
+        return str(auth_session.user_id)
+    # Unauthenticated — fall back to the demo user so prompts are persisted.
+    return str(get_config().demo_mode.demo_user_id)
+
+
+def _prompt_lib_can_write(auth_session: Any) -> bool:  # noqa: ARG001
+    # All visitors (authenticated, demo, or unauthenticated) can write prompts.
+    # Unauthenticated users share the demo-user account.
+    return True
+
+
+def _render_prompt_library_sidebar(
+    *,
+    agent_choice: str,
+    agent_options: list[str],
+    auth_session: Any,
+) -> None:
+    """Render the Prompt Library expander in the sidebar.
+
+    When the user clicks "Use prompt", ``st.session_state[_PROMPT_LIB_PENDING_KEY]``
+    is populated with the prompt body. The chat input handler injects it as if
+    the user had typed it.
+    """
+    user_id = _prompt_lib_user_id(auth_session)
+    is_admin = has_admin_access(auth_session) if auth_session is not None else False
+
+    with st.expander("📚 Prompt Library", expanded=False):
+        try:
+            repo = get_prompt_repository()
+            visible: list[PromptRecord] = repo.list_visible(user_id, agent_name=agent_choice)
+        except Exception as exc:  # noqa: BLE001
+            st.caption(f"Prompt library unavailable: {exc}")
+            return
+
+        # ---- Picker -----------------------------------------------------
+        pick_label_to_record: dict[str, PromptRecord] = {}
+        for rec in visible:
+            tag = " 🌐" if rec.visibility == VISIBILITY_GLOBAL else ""
+            pick_label_to_record[f"{rec.title}{tag}"] = rec
+
+        labels = ["— none —", *pick_label_to_record.keys()]
+        selected_label = st.selectbox(
+            "Choose a prompt for this agent",
+            labels,
+            key=f"prompt_lib_pick__{agent_choice}",
+        )
+        selected_record = pick_label_to_record.get(selected_label)
+
+        if selected_record is not None:
+            preview = selected_record.body
+            if len(preview) > 220:
+                preview = preview[:220] + "…"
+            st.caption(preview)
+            if st.button(
+                "Use prompt",
+                key=f"prompt_lib_use__{agent_choice}",
+                use_container_width=True,
+            ):
+                st.session_state[_PROMPT_LIB_PENDING_KEY] = selected_record.body
+                st.session_state[_PROMPT_LIB_PENDING_ID_KEY] = selected_record.prompt_id
+                st.rerun()
+        elif not pick_label_to_record:
+            st.caption("No prompts assigned to this agent yet.")
+
+        st.divider()
+        st.caption("Manage prompts")
+
+        try:
+            owned: list[PromptRecord] = repo.list_owned(user_id)
+        except Exception as exc:  # noqa: BLE001
+            st.caption(f"Could not load owned prompts: {exc}")
+            owned = []
+
+        # ----- Create new prompt -----
+        with st.expander("➕ New prompt", expanded=False), st.form(
+            f"prompt_lib_new__{agent_choice}", clear_on_submit=True
+        ):
+                new_title = st.text_input("Title", max_chars=200)
+                new_body = st.text_area("Prompt body", height=140)
+                new_description = st.text_input("Description (optional)", max_chars=1000)
+                new_tags_raw = st.text_input("Tags (comma-separated, optional)")
+                new_agents = st.multiselect(
+                    "Assign to agents (leave empty for any agent)",
+                    options=agent_options,
+                    default=[agent_choice] if agent_choice in agent_options else [],
+                )
+                visibility_options = [VISIBILITY_PRIVATE, VISIBILITY_GLOBAL] if is_admin else [VISIBILITY_PRIVATE]
+                new_visibility = st.selectbox("Visibility", visibility_options, index=0)
+                submitted = st.form_submit_button("Create", use_container_width=True)
+                if submitted:
+                    if not new_title.strip() or not new_body.strip():
+                        st.error("Title and body are required.")
+                    else:
+                        save_status = st.empty()
+                        save_status.info("⏳ Saving to memory…")
+                        try:
+                            tags = [t.strip() for t in new_tags_raw.split(",") if t.strip()]
+                            repo.create(
+                                user_id=user_id,
+                                title=new_title,
+                                body=new_body,
+                                description=new_description or None,
+                                tags=tags,
+                                agent_names=new_agents,
+                                visibility=new_visibility,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            save_status.empty()
+                            st.error(f"Failed to create prompt: {exc}")
+                        else:
+                            save_status.empty()
+                            st.success(f"Created '{new_title.strip()}'.")
+                            st.rerun()
+
+        # ----- Edit / delete existing -----
+        with st.expander("✏️ Edit / delete", expanded=False):
+            if not owned:
+                st.caption("You haven't created any prompts yet.")
+            else:
+                edit_label_to_record = {f"{r.title}  ·  {r.prompt_id[:8]}": r for r in owned}
+                edit_label = st.selectbox(
+                    "Pick a prompt to edit",
+                    list(edit_label_to_record.keys()),
+                    key=f"prompt_lib_edit_pick__{agent_choice}",
+                )
+                target = edit_label_to_record[edit_label]
+                form_key = f"prompt_lib_edit__{target.prompt_id}"
+                with st.form(form_key):
+                    e_title = st.text_input("Title", value=target.title, max_chars=200)
+                    e_body = st.text_area("Prompt body", value=target.body, height=140)
+                    e_description = st.text_input(
+                        "Description (optional)",
+                        value=target.description or "",
+                        max_chars=1000,
+                    )
+                    e_tags_raw = st.text_input(
+                        "Tags (comma-separated, optional)",
+                        value=", ".join(target.tags),
+                    )
+                    e_agents = st.multiselect(
+                        "Assign to agents (leave empty for any agent)",
+                        options=agent_options,
+                        default=[a for a in target.agent_names if a in agent_options],
+                    )
+                    visibility_options = (
+                        [VISIBILITY_PRIVATE, VISIBILITY_GLOBAL]
+                        if is_admin
+                        else [VISIBILITY_PRIVATE]
+                    )
+                    current_vis = target.visibility if target.visibility in visibility_options else VISIBILITY_PRIVATE
+                    e_visibility = st.selectbox(
+                        "Visibility",
+                        visibility_options,
+                        index=visibility_options.index(current_vis),
+                    )
+                    e_active = st.checkbox("Active", value=target.is_active)
+                    col_save, col_delete = st.columns(2)
+                    save_clicked = col_save.form_submit_button("Save changes", use_container_width=True)
+                    delete_clicked = col_delete.form_submit_button("Delete", use_container_width=True)
+
+                    if save_clicked:
+                        save_status = st.empty()
+                        save_status.info("⏳ Saving to memory…")
+                        try:
+                            tags = [t.strip() for t in e_tags_raw.split(",") if t.strip()]
+                            repo.update(
+                                target.prompt_id,
+                                title=e_title,
+                                body=e_body,
+                                description=e_description,
+                                tags=tags,
+                                agent_names=e_agents,
+                                visibility=e_visibility,
+                                is_active=e_active,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            save_status.empty()
+                            st.error(f"Failed to update prompt: {exc}")
+                        else:
+                            save_status.empty()
+                            st.success("Updated.")
+                            st.rerun()
+
+                    if delete_clicked:
+                        save_status = st.empty()
+                        save_status.info("⏳ Saving to memory…")
+                        try:
+                            repo.delete(target.prompt_id)
+                        except Exception as exc:  # noqa: BLE001
+                            save_status.empty()
+                            st.error(f"Failed to delete prompt: {exc}")
+                        else:
+                            save_status.empty()
+                            st.success("Deleted.")
+                            st.rerun()
 
 
 def _browser_prefs_scope_key() -> str:
@@ -2674,17 +2941,15 @@ with st.sidebar:
 
     _ai_defs = get_config().ai.defaults
     _labels = get_config().ui.labels
-    temperature = st.slider(_labels.temperature, _ai_defs.temperature_min, _ai_defs.temperature_max, _ai_defs.temperature, _ai_defs.temperature_step)
-    max_tokens = st.number_input(_labels.max_tokens, min_value=_ai_defs.max_tokens_min, max_value=_ai_defs.max_tokens_max, value=_ai_defs.max_tokens, step=1)
-    top_p = st.slider(_labels.top_p, _ai_defs.top_p_min, _ai_defs.top_p_max, _ai_defs.top_p, _ai_defs.top_p_step)
-    verify_tls = st.checkbox(_labels.verify_tls, value=_ai_defs.verify_tls)
-    debug_enabled = st.checkbox(_labels.debug_mode, value=_ai_defs.debug_mode)
-
-    if debug_enabled:
-        _ensure_debug_log_handler()
 
     if st.button("New chat"):
         st.session_state.messages = []
+
+    _render_prompt_library_sidebar(
+        agent_choice=agent_choice,
+        agent_options=AGENT_OPTIONS,
+        auth_session=_current_auth_session,
+    )
 
     if agent_choice in {"Kaito Assistant", "KAITO RAG Assistant"} and _is_cluster_local_endpoint(endpoint) and not _is_running_in_kubernetes():
         st.warning(
@@ -2704,6 +2969,15 @@ with st.sidebar:
             st.caption("No completions yet.")
 
     st.divider()
+    with st.expander("⚙️ Advanced settings", expanded=False):
+        temperature = st.slider(_labels.temperature, _ai_defs.temperature_min, _ai_defs.temperature_max, _ai_defs.temperature, _ai_defs.temperature_step)
+        max_tokens = st.number_input(_labels.max_tokens, min_value=_ai_defs.max_tokens_min, max_value=_ai_defs.max_tokens_max, value=_ai_defs.max_tokens, step=1)
+        top_p = st.slider(_labels.top_p, _ai_defs.top_p_min, _ai_defs.top_p_max, _ai_defs.top_p, _ai_defs.top_p_step)
+        verify_tls = st.checkbox(_labels.verify_tls, value=_ai_defs.verify_tls)
+        debug_enabled = st.checkbox(_labels.debug_mode, value=_ai_defs.debug_mode)
+    if debug_enabled:
+        _ensure_debug_log_handler()
+
     if has_diagnostics_access(_current_auth_session):
         _diag_url = f"/diagnostics?agent={urllib.request.pathname2url(agent_choice)}"
         st.markdown(
@@ -3092,6 +3366,16 @@ with chat_col:
                 st.markdown(message["content"])
 
     prompt = st.chat_input("Ask something...", key=chat_input_key)
+    # If the user clicked "Use prompt" in the Prompt Library, inject it as if typed.
+    _pending_prompt = st.session_state.pop(_PROMPT_LIB_PENDING_KEY, None)
+    _pending_prompt_id = st.session_state.pop(_PROMPT_LIB_PENDING_ID_KEY, None)
+    if not prompt and isinstance(_pending_prompt, str) and _pending_prompt.strip():
+        prompt = _pending_prompt
+        if _pending_prompt_id:
+            try:
+                get_prompt_repository().mark_used(str(_pending_prompt_id))
+            except Exception:  # noqa: BLE001
+                logger.debug("prompt_library mark_used failed", exc_info=True)
     if prompt:
         if not can_use_agent(get_current_auth_session(), agent_choice, AGENT_OPTIONS):
             st.error(f"You are not allowed to use the selected agent: {agent_choice}")
@@ -3279,6 +3563,7 @@ with chat_col:
                         fitness_chat_client, fitness_model = _build_fitness_chat_client(_backend_cfg, PROVIDERS)
                     else:
                         fitness_chat_client, fitness_model = None, model
+                    _persist_status_ph = st.empty()
                     fitness_started = time.perf_counter()
                     content, usage_summary = asyncio.run(
                         _run_fitness_turn(
@@ -3288,6 +3573,7 @@ with chat_col:
                             image_bytes=uploaded_food_image_bytes,
                             image_name=uploaded_food_image_name,
                             assistant_placeholder=assistant_placeholder,
+                            persist_status_placeholder=_persist_status_ph,
                             request_id=request_id,
                             chat_client=fitness_chat_client,
                             backend_cfg=_backend_cfg if _backend_provider_name else None,

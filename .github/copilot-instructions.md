@@ -27,12 +27,13 @@ This repository is a collection of standalone Python demo applications focused o
 - Preferred validation tools in this repo are `ruff`, `mypy`, `pytest`, and targeted local runs such as `uv run streamlit run ...` when UI validation is relevant.
 - Some subprojects still use `requirements.txt`; use the project's existing package-management pattern instead of forcing `uv` everywhere.
 
-## Azure and AKS Guardrails
+## Azure and Hosting Guardrails
 
 - Follow Azure-specific guidance and best practices whenever the task involves Azure services, Azure SDKs, Azure deployment assets, or Azure operations.
 - Read-only Azure investigation is acceptable by default when needed for diagnostics or understanding the environment.
-- Do not modify live Azure resources, run deployments, apply Kubernetes manifests, restart workloads, or change AKS state unless the user explicitly asks for that action.
-- Avoid touching live AKS resources by default, even if local manifest or script changes are being made.
+- Treat **Azure App Service and AKS (Kubernetes)** as equal first-class hosting targets. Do not assume AKS-only when deployment or hosting concerns arise.
+- Do not modify live Azure resources, run deployments, apply Kubernetes manifests, restart workloads, or change AKS or App Service state unless the user explicitly asks for that action.
+- Avoid touching live hosted resources by default, even if local manifest or script changes are being made.
 - Prefer safe inspection and explanation before any operational command that changes cloud or cluster state.
 
 ## `agentframework/` Biases
@@ -42,6 +43,8 @@ This repository is a collection of standalone Python demo applications focused o
 - When working on agent backends, preserve the abstraction boundary between orchestration and backend client implementation.
 - Favor targeted changes around agent selection, prompt handling, diagnostics, database access, and Streamlit integration rather than introducing new frameworks.
 - If a task touches testing, add or update focused unit tests where practical rather than introducing large new test scaffolding.
+- **Persistence default:** When adding any new feature that writes data (metrics, meals, profile fields, goals, etc.), default to immediate in-request persistence so the UI reflects changes in the same rerender cycle. Only use background/async writes if the user explicitly asks or if the operation is too expensive to block on. Controlled via the `FITNESS_PERSISTENCE_MODE` env var (`inline` default; `async` to opt out).
+- **Save/persist UI indicator:** When adding new Streamlit UI that triggers a database write, use an ephemeral `st.empty()` placeholder to show a brief `"⏳ Saving to memory…"` message that is cleared (`.empty()`) immediately after the write completes. Do not leave persistent status text in the chat thread.
 
 ## Repo Skill
 

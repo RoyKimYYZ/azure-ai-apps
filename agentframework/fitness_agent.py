@@ -120,7 +120,7 @@ async def _persist_text_turn_memory(
         result = await run_with_retry(
             agent,
             extraction_prompt,
-            response_format=TextTurnStructuredOutput,
+            options={"response_format": TextTurnStructuredOutput},
         )
         payload, raw_output = _coerce_text_turn_payload(result)
         if not payload.profile_updates and not payload.body_metric_events_insert:
@@ -213,7 +213,7 @@ async def _handle_photo_submission(
             agent,
             request_message,
             thread=thread,
-            response_format=PhotoSubmissionStructuredOutput,
+            options={"response_format": PhotoSubmissionStructuredOutput},
         )
         _status("Persisting extracted data to database...")
         payload, raw_output = _coerce_payload(result)

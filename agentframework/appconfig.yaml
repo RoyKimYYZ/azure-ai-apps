@@ -74,9 +74,11 @@ ai:
     - name: AI Foundry
       endpoint_env: AI_FOUNDRY_ENDPOINT
       api_key_env: AI_FOUNDRY_API_KEY
-      models: [gpt-5.2-chat, DeepSeek-V3.2, gpt-5-mini]
+      models: [gpt-5.4-pro, gpt-chat-latest, gpt-5.2-chat, DeepSeek-V3.2, gpt-5-mini]
       model_env: AI_FOUNDRY_MODEL
-      default_model: gpt-5.2-chat
+      default_model: gpt-5.4-pro
+      # Models that only support Chat Completions API (not Responses API)
+      chat_completions_models: [DeepSeek-V3.2]
 
     - name: KAITO
       endpoint_env: KAITO_INFERENCE_ENDPOINT
