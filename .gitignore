@@ -62,3 +62,12 @@ Thumbs.db
 *.env
 agentframework/agentframework.db
 agentframework/agentframework.db
+agentframework/architecture-animated.svg
+agentframework/azure-deployment-architecture.svg
+agentframework/fitness-agent-azure-sql-data-model.svg
+agentframework/fitness-agent-azure-sql-erd.svg
+agentframework/fitness-agent-context-window-animated.svg
+agentframework/fitness-agent-context-window.svg
+agentframework/fitness-nutrition-agent-architecture.svg
+agentframework/infrastructure-animated.svg
+agentframework/streamlit-high-level-tech-stack.svg
