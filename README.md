@@ -223,4 +223,4 @@ Each sub-project follows a similar workflow:
 
 ## License
 
-This project is for educational and demonstration purposes.
+This project is licensed under the [MIT License](LICENSE).
